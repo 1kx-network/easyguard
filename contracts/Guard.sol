@@ -9,8 +9,6 @@ import "@safe-global/safe-contracts/contracts/interfaces/IERC165.sol";
 import "@safe-global/safe-contracts/contracts/interfaces/ISignatureValidator.sol";
 import "@openzeppelin/contracts/access/Ownable.sol";
 
-import "./ConditionCheck.sol";
-
 enum Opcode {
     // Opcodes that add values to the stack
     TRUE,
@@ -21,16 +19,14 @@ enum Opcode {
     CONSTANT,
     ADDRESS,
     MSGSENDER,
-    DUP,  // Dup both takes one value from the stack and adds one.
-
+    DUP, // Dup both takes one value from the stack and adds one.
     // Opcodes that take one value from the stack and put another one
     ISSIGNER,
     ISOWNER,
     ISZERO,
     NOT,
-
     // Opcodes that need two values on the stack
-    CALLDATA,  // needs offset and length
+    CALLDATA, // needs offset and length
     SWAP,
     LT,
     GT,
@@ -45,52 +41,61 @@ enum Opcode {
 }
 
 /**
- * @title Restricted Transaction Guard
+ * @title Easy Guard
  * @notice This contract is a transaction guard for Safe ^1.3.0
- *         It allows the safe to exclude particular owners from signing a transaction
  */
-contract RestrictedTransactionGuard is BaseGuard(), ISignatureValidatorConstants, SignatureDecoder {
- 
-    /**
-     * @dev stores the address for the contract which checks if the restricted wallets are allowed to execute a
-     * transaction
-     */
+contract EasyGuard is
+    BaseGuard,
+    ISignatureValidatorConstants,
+    SignatureDecoder
+{
     mapping(Safe => bytes32[]) private checkerProgram;
 
-    /**
-     * @dev taken from a guard example from the gnosis repo.
-     *      To prevent a revert on fallback, we define it empty. This will avoid issues in case of a Safe upgrade
-     *      E.g. the expected check method might change and theen the Safe would be locked.
-     */
     // solhint-disable-next-line payable-fallback
     fallback() external {}
 
-    /**
-     * @notice sets the restrictedTransactionChecker, a contract which does additional checks if the safe is
-     * allowed to execute the given transaction. This checker is only called if there are not enough unrestricted
-     * signers in the transaction.
-     */
-    function setCheckerProgram(Safe safe, bytes32[] calldata newChecker) external  {
+    function setCheckerProgram(
+        Safe safe,
+        bytes32[] calldata newChecker
+    ) external {
         checkerProgram[safe] = newChecker;
     }
 
-    function getConditionChecker(Safe safe) external view returns (bytes32[] memory) {
+    function getCheckerProgram(
+        Safe safe
+    ) external view returns (bytes32[] memory) {
         return checkerProgram[safe];
     }
 
-    /** 
+    /**
+     * This function should be called by Safe to enable the guard.
+     * It must be called as DELEGATE_CALL.
+     *
+     * @param guard     the address of the guard
+     * @param program   the program to be executed by the guard
+     */
+    function enableGuard(address guard, bytes32[] calldata program) external {
+        Safe safe = Safe(payable(address(this)));
+        safe.setGuard(guard);
+        EasyGuard(guard).setCheckerProgram(safe, program);
+    }
+
+    /**
      *
      * @dev This function is an implementation of the Guard interface from the @gnosis.pm package.
      * @param txHash            the hash of the transaction
      * @param signatures        the signatures of the transaction
      */
-    function findAllSigners(bytes32 txHash, bytes memory signatures) internal pure returns (address[] memory signers) {
+    function findAllSigners(
+        bytes32 txHash,
+        bytes memory signatures
+    ) internal pure returns (address[] memory signers) {
         address currentOwner;
         uint8 v;
         bytes32 r;
         bytes32 s;
         uint256 i;
-        
+
         uint256 numSignatures = signatures.length / 0x41;
         signers = new address[](numSignatures);
 
@@ -108,8 +113,17 @@ contract RestrictedTransactionGuard is BaseGuard(), ISignatureValidatorConstants
             } else if (v > 30) {
                 // If v > 30 then default va (27,28) has been adjusted for eth_sign flow
                 // To support eth_sign and similar we adjust v and hash the messageHash with the Ethereum message prefix before applying ecrecover
-                currentOwner =
-                    ecrecover(keccak256(abi.encodePacked("\x19Ethereum Signed Message:\n32", txHash)), v - 4, r, s);
+                currentOwner = ecrecover(
+                    keccak256(
+                        abi.encodePacked(
+                            "\x19Ethereum Signed Message:\n32",
+                            txHash
+                        )
+                    ),
+                    v - 4,
+                    r,
+                    s
+                );
             } else {
                 // Default is the ecrecover flow with the provided data hash
                 // Use ecrecover with the messageHash for EOA signatures
@@ -132,7 +146,9 @@ contract RestrictedTransactionGuard is BaseGuard(), ISignatureValidatorConstants
         }
     }
 
-    function getTxHash(TransactionContext memory context) internal view returns (bytes32) {
+    function getTxHash(
+        TransactionContext memory context
+    ) internal view returns (bytes32) {
         uint256 nonce = context.safe.nonce() - 1;
         bytes memory txHashData = context.safe.encodeTransactionData(
             // Transaction info
@@ -151,7 +167,7 @@ contract RestrictedTransactionGuard is BaseGuard(), ISignatureValidatorConstants
         );
         return keccak256(txHashData);
     }
-    
+
     uint256 public constant MAX_STACK_SIZE = 32;
 
     struct TransactionContext {
@@ -165,7 +181,7 @@ contract RestrictedTransactionGuard is BaseGuard(), ISignatureValidatorConstants
         uint256 gasPrice;
         address gasToken;
         address payable refundReceiver;
-        address msgSender;     
+        address msgSender;
     }
 
     /**
@@ -200,11 +216,33 @@ contract RestrictedTransactionGuard is BaseGuard(), ISignatureValidatorConstants
         bytes memory signatures,
         address msgSender
     ) external view override {
-        TransactionContext memory context = TransactionContext(Safe(payable(msg.sender)), to, value, data, operation, safeTxGas, baseGas, gasPrice, gasToken, refundReceiver, msgSender);
+        TransactionContext memory context = TransactionContext(
+            Safe(payable(msg.sender)),
+            to,
+            value,
+            data,
+            operation,
+            safeTxGas,
+            baseGas,
+            gasPrice,
+            gasToken,
+            refundReceiver,
+            msgSender
+        );
 
         // Make sure we can always remove the guard, to protect against lock out.
-        if (to == address(context.safe) && operation == Enum.Operation.DelegateCall && data.length == 24 && bytes4(data) == 0xe19a9dd9) {
-            return;
+        if (
+            to == address(context.safe) &&
+            operation == Enum.Operation.DelegateCall &&
+            data.length == 24
+        ) {
+            (bytes4 selector, address target) = abi.decode(
+                data,
+                (bytes4, address)
+            );
+            if (selector == 0x7f5828d0 && target == address(0)) {
+                return;
+            }
         }
 
         bytes32[] memory program = checkerProgram[context.safe];
@@ -216,7 +254,7 @@ contract RestrictedTransactionGuard is BaseGuard(), ISignatureValidatorConstants
         address[] memory signers;
 
         bytes32[MAX_STACK_SIZE] memory stack;
-        uint256 sp = 0;  // For convenience, there will be one empty slot on the stack
+        uint256 sp = 0; // For convenience, there will be one empty slot on the stack
         uint256 pc = 0;
         for (;;) {
             bytes32 instruction = program[pc++];
@@ -235,7 +273,10 @@ contract RestrictedTransactionGuard is BaseGuard(), ISignatureValidatorConstants
             } else if (opcode == Opcode.CALLDATA) {
                 uint256 offset = uint256(stack[sp - 1]);
                 uint256 length = uint256(stack[sp]);
-                require(context.data.length >= offset + length, "Data out of bounds");
+                require(
+                    context.data.length >= offset + length,
+                    "Data out of bounds"
+                );
                 bytes memory extractedData = new bytes(length);
                 for (uint256 j = 0; j < length; j++) {
                     extractedData[j] = context.data[offset + j];
@@ -252,18 +293,34 @@ contract RestrictedTransactionGuard is BaseGuard(), ISignatureValidatorConstants
             } else if (opcode == Opcode.MSGSENDER) {
                 stack[++sp] = bytes32(uint256(uint160(msgSender)));
             } else if (opcode == Opcode.LT) {
-                stack[sp - 1] = bytes32(uint256(stack[sp - 1]) < uint256(stack[sp]) ? uint256(1) : uint256(0));
+                stack[sp - 1] = bytes32(
+                    uint256(stack[sp - 1]) < uint256(stack[sp])
+                        ? uint256(1)
+                        : uint256(0)
+                );
                 sp--;
             } else if (opcode == Opcode.GT) {
-                stack[sp - 1] = bytes32(uint256(stack[sp - 1]) > uint256(stack[sp]) ? uint256(1) : uint256(0));
+                stack[sp - 1] = bytes32(
+                    uint256(stack[sp - 1]) > uint256(stack[sp])
+                        ? uint256(1)
+                        : uint256(0)
+                );
                 sp--;
             } else if (opcode == Opcode.EQ) {
-                stack[sp - 1] = bytes32(uint256(stack[sp - 1]) == uint256(stack[sp]) ? 1 : uint256(0));
+                stack[sp - 1] = bytes32(
+                    uint256(stack[sp - 1]) == uint256(stack[sp])
+                        ? 1
+                        : uint256(0)
+                );
                 sp--;
             } else if (opcode == Opcode.ISZERO) {
-                stack[sp] = bytes32(uint256(stack[sp]) == 0 ? uint256(1) : uint256(0));
+                stack[sp] = bytes32(
+                    uint256(stack[sp]) == 0 ? uint256(1) : uint256(0)
+                );
             } else if (opcode == Opcode.NOT) {
-                stack[sp] = bytes32(uint256(stack[sp]) == 0 ? uint256(1) : uint256(0));
+                stack[sp] = bytes32(
+                    uint256(stack[sp]) == 0 ? uint256(1) : uint256(0)
+                );
             } else if (opcode == Opcode.AND) {
                 bool op1 = (uint256(stack[sp - 1]) != 0);
                 bool op2 = (uint256(stack[sp]) != 0);
@@ -275,19 +332,29 @@ contract RestrictedTransactionGuard is BaseGuard(), ISignatureValidatorConstants
                 stack[sp - 1] = bytes32(uint256(op1 || op2 ? 1 : 0));
                 sp--;
             } else if (opcode == Opcode.PLUS) {
-                stack[sp - 1] = bytes32(uint256(stack[sp - 1]) + uint256(stack[sp]));
+                stack[sp - 1] = bytes32(
+                    uint256(stack[sp - 1]) + uint256(stack[sp])
+                );
                 sp--;
             } else if (opcode == Opcode.MINUS) {
-                stack[sp - 1] = bytes32(uint256(stack[sp - 1]) - uint256(stack[sp]));
+                stack[sp - 1] = bytes32(
+                    uint256(stack[sp - 1]) - uint256(stack[sp])
+                );
                 sp--;
             } else if (opcode == Opcode.MUL) {
-                stack[sp - 1] = bytes32(uint256(stack[sp - 1]) * uint256(stack[sp]));
+                stack[sp - 1] = bytes32(
+                    uint256(stack[sp - 1]) * uint256(stack[sp])
+                );
                 sp--;
             } else if (opcode == Opcode.DIV) {
-                stack[sp - 1] = bytes32(uint256(stack[sp - 1]) / uint256(stack[sp]));
+                stack[sp - 1] = bytes32(
+                    uint256(stack[sp - 1]) / uint256(stack[sp])
+                );
                 sp--;
             } else if (opcode == Opcode.MOD) {
-                stack[sp - 1] = bytes32(uint256(stack[sp - 1]) % uint256(stack[sp]));
+                stack[sp - 1] = bytes32(
+                    uint256(stack[sp - 1]) % uint256(stack[sp])
+                );
                 sp--;
             } else if (opcode == Opcode.ISSIGNER) {
                 if (!signersInitialized) {
@@ -320,9 +387,8 @@ contract RestrictedTransactionGuard is BaseGuard(), ISignatureValidatorConstants
         require(sp == 1, "Stack not empty");
         require(uint256(stack[sp]) != 0, "Condition not met");
     }
-    
-    function checkAfterExecution(bytes32 txHash, bool success) external
-    {
+
+    function checkAfterExecution(bytes32 txHash, bool success) external {
         // nothing to do here
     }
 }
