@@ -25,6 +25,8 @@ enum Opcode {
     ISOWNER,
     ISZERO,
     NOT,
+    ALLOW,
+    DENY,
     // Opcodes that need two values on the stack
     CALLDATA, // needs offset and length
     SWAP,
@@ -175,7 +177,7 @@ contract EasyGuard is
         return keccak256(txHashData);
     }
 
-    uint256 public constant MAX_STACK_SIZE = 32;
+    uint256 public constant MAX_STACK_SIZE = 64;
 
     struct TransactionContext {
         Safe safe;
@@ -265,7 +267,15 @@ contract EasyGuard is
             bytes32 instruction = program[pc++];
             Opcode opcode = Opcode(uint8(bytes1(instruction)));
             checkStackOverUnderflow(sp, opcode);
-            if (opcode == Opcode.TRUE) {
+            if (opcode == Opcode.ALLOW) {
+                if (uint256(stack[sp--]) == uint256(1)) {
+                    return;
+                }
+            } else if (opcode == Opcode.DENY) {
+                if (uint256(stack[sp--]) == uint256(1)) {
+                    revert("Denied by guard");
+                }
+            } else if (opcode == Opcode.TRUE) {
                 stack[++sp] = bytes32(uint256(1));
             } else if (opcode == Opcode.FALSE) {
                 stack[++sp] = bytes32(0);
