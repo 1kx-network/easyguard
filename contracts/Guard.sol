@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: UNLICENSED
+// SPDX-License-Identifier: MIT
 pragma solidity ^0.8.28;
 
 import "@safe-global/safe-contracts/contracts/base/GuardManager.sol";
@@ -12,31 +12,36 @@ import "@openzeppelin/contracts/access/Ownable.sol";
 import "./ConditionCheck.sol";
 
 enum Opcode {
+    // Opcodes that add values to the stack
     TRUE,
     FALSE,
     TO,
     FROM,
     VALUE,
-    CALLDATA,
     CONSTANT,
     ADDRESS,
-    DUP,
-    SWAP,
     MSGSENDER,
+    DUP,  // Dup both takes one value from the stack and adds one.
+
+    // Opcodes that take one value from the stack and put another one
+    ISSIGNER,
+    ISOWNER,
+    ISZERO,
+    NOT,
+
+    // Opcodes that need two values on the stack
+    CALLDATA,  // needs offset and length
+    SWAP,
     LT,
     GT,
     EQ,
-    ISZERO,
-    NOT,
     AND,
     OR,
     PLUS,
     MINUS,
     MUL,
     DIV,
-    MOD,
-    ISSIGNER,
-    ISOWNER
+    MOD
 }
 
 /**
@@ -112,6 +117,18 @@ contract RestrictedTransactionGuard is BaseGuard(), ISignatureValidatorConstants
             }
 
             signers[i] = currentOwner;
+        }
+    }
+
+    function checkStackOverUnderflow(uint256 sp, Opcode opcode) internal pure {
+        if (opcode <= Opcode.DUP) {
+            require(sp < MAX_STACK_SIZE, "Stack overflow");
+        }
+        // DUP is deliberately in two conditions because it adds one to the stack
+        if (opcode >= Opcode.DUP && opcode < Opcode.CALLDATA) {
+            require(sp >= 1, "Stack underflow");
+        } else {
+            require(sp >= 2, "Stack underflow");
         }
     }
 
@@ -204,23 +221,18 @@ contract RestrictedTransactionGuard is BaseGuard(), ISignatureValidatorConstants
         for (;;) {
             bytes32 instruction = program[pc++];
             Opcode opcode = Opcode(uint8(bytes1(instruction)));
+            checkStackOverUnderflow(sp, opcode);
             if (opcode == Opcode.TRUE) {
-                require(sp < MAX_STACK_SIZE, "Stack overflow");
                 stack[++sp] = bytes32(uint256(1));
             } else if (opcode == Opcode.FALSE) {
-                require(sp < MAX_STACK_SIZE, "Stack overflow");
                 stack[++sp] = bytes32(0);
             } else if (opcode == Opcode.TO) {
-                require(sp < MAX_STACK_SIZE, "Stack overflow");
                 stack[++sp] = bytes32(uint256(uint160(context.to)));
             } else if (opcode == Opcode.FROM) {
-                require(sp < MAX_STACK_SIZE, "Stack overflow");
                 stack[++sp] = bytes32(uint256(uint160(context.msgSender)));
             } else if (opcode == Opcode.VALUE) {
-                require(sp < MAX_STACK_SIZE, "Stack overflow");
                 stack[++sp] = bytes32(context.value);
             } else if (opcode == Opcode.CALLDATA) {
-                require(sp >= 2, "Stack underflow");
                 uint256 offset = uint256(stack[sp - 1]);
                 uint256 length = uint256(stack[sp]);
                 require(context.data.length >= offset + length, "Data out of bounds");
@@ -230,74 +242,55 @@ contract RestrictedTransactionGuard is BaseGuard(), ISignatureValidatorConstants
                 }
                 stack[++sp] = bytes32(abi.decode(extractedData, (uint256)));
             } else if (opcode == Opcode.CONSTANT) {
-                require(sp < MAX_STACK_SIZE, "Stack overflow");
                 stack[++sp] = program[uint256(program[pc++])];
             } else if (opcode == Opcode.ADDRESS) {
-                require(sp < MAX_STACK_SIZE, "Stack overflow");
                 stack[++sp] = bytes32(uint256(instruction) >> 8);
             } else if (opcode == Opcode.DUP) {
-                require(sp < MAX_STACK_SIZE, "Stack overflow");
-                require(sp >= 1, "Stack underflow");
                 stack[++sp] = stack[sp];
             } else if (opcode == Opcode.SWAP) {
-                require(sp >= 2, "Stack underflow");
                 (stack[sp], stack[sp - 1]) = (stack[sp - 1], stack[sp]);
             } else if (opcode == Opcode.MSGSENDER) {
-                require(sp < MAX_STACK_SIZE, "Stack overflow");
                 stack[++sp] = bytes32(uint256(uint160(msgSender)));
             } else if (opcode == Opcode.LT) {
-                require(sp >= 2, "Stack underflow");
                 stack[sp - 1] = bytes32(uint256(stack[sp - 1]) < uint256(stack[sp]) ? uint256(1) : uint256(0));
                 sp--;
             } else if (opcode == Opcode.GT) {
-                require(sp >= 2, "Stack underflow");
                 stack[sp - 1] = bytes32(uint256(stack[sp - 1]) > uint256(stack[sp]) ? uint256(1) : uint256(0));
                 sp--;
             } else if (opcode == Opcode.EQ) {
-                require(sp >= 2, "Stack underflow");
                 stack[sp - 1] = bytes32(uint256(stack[sp - 1]) == uint256(stack[sp]) ? 1 : uint256(0));
                 sp--;
             } else if (opcode == Opcode.ISZERO) {
-                require(sp >= 1, "Stack underflow");
                 stack[sp] = bytes32(uint256(stack[sp]) == 0 ? uint256(1) : uint256(0));
             } else if (opcode == Opcode.NOT) {
-                require(sp >= 1, "Stack underflow");
                 stack[sp] = bytes32(uint256(stack[sp]) == 0 ? uint256(1) : uint256(0));
             } else if (opcode == Opcode.AND) {
-                require(sp >= 2, "Stack underflow");
                 bool op1 = (uint256(stack[sp - 1]) != 0);
                 bool op2 = (uint256(stack[sp]) != 0);
                 stack[sp - 1] = bytes32(uint256(op1 && op2 ? 1 : 0));
                 sp--;
             } else if (opcode == Opcode.OR) {
-                require(sp >= 2, "Stack underflow");
                 bool op1 = (uint256(stack[sp - 1]) != 0);
                 bool op2 = (uint256(stack[sp]) != 0);
                 stack[sp - 1] = bytes32(uint256(op1 || op2 ? 1 : 0));
                 sp--;
             } else if (opcode == Opcode.PLUS) {
-                require(sp >= 2, "Stack underflow");
                 stack[sp - 1] = bytes32(uint256(stack[sp - 1]) + uint256(stack[sp]));
                 sp--;
             } else if (opcode == Opcode.MINUS) {
-                require(sp >= 2, "Stack underflow");
                 stack[sp - 1] = bytes32(uint256(stack[sp - 1]) - uint256(stack[sp]));
                 sp--;
             } else if (opcode == Opcode.MUL) {
-                require(sp >= 2, "Stack underflow");
                 stack[sp - 1] = bytes32(uint256(stack[sp - 1]) * uint256(stack[sp]));
                 sp--;
             } else if (opcode == Opcode.DIV) {
-                require(sp >= 2, "Stack underflow");
                 stack[sp - 1] = bytes32(uint256(stack[sp - 1]) / uint256(stack[sp]));
                 sp--;
             } else if (opcode == Opcode.MOD) {
-                require(sp >= 2, "Stack underflow");
                 stack[sp - 1] = bytes32(uint256(stack[sp - 1]) % uint256(stack[sp]));
                 sp--;
             } else if (opcode == Opcode.ISSIGNER) {
-                require(sp >= 1, "Stack underflow");
-                if (!signersInitialized == false) {
+                if (!signersInitialized) {
                     bytes32 txHash = getTxHash(context);
                     signers = findAllSigners(txHash, signatures);
                     signersInitialized = true;
@@ -311,7 +304,6 @@ contract RestrictedTransactionGuard is BaseGuard(), ISignatureValidatorConstants
                     }
                 }
             } else if (opcode == Opcode.ISOWNER) {
-                require(sp >= 1, "Stack underflow");
                 address owner = address(uint160(uint256(stack[sp])));
                 address[] memory owners = context.safe.getOwners();
                 stack[sp] = bytes32(0);
@@ -325,6 +317,8 @@ contract RestrictedTransactionGuard is BaseGuard(), ISignatureValidatorConstants
                 revert("Invalid opcode");
             }
         }
+        require(sp == 1, "Stack not empty");
+        require(uint256(stack[sp]) != 0, "Condition not met");
     }
     
     function checkAfterExecution(bytes32 txHash, bool success) external
