@@ -50,15 +50,18 @@ contract EasyGuard is
     SignatureDecoder
 {
     mapping(Safe => bytes32[]) private checkerProgram;
+    mapping(Safe => bool) private disableLockoutCheck;
 
     // solhint-disable-next-line payable-fallback
     fallback() external {}
 
     function setCheckerProgram(
         Safe safe,
-        bytes32[] calldata newChecker
+        bytes32[] calldata newChecker,
+        bool _disableLockoutCheck
     ) external {
         checkerProgram[safe] = newChecker;
+        disableLockoutCheck[safe] = _disableLockoutCheck;
     }
 
     function getCheckerProgram(
@@ -74,10 +77,14 @@ contract EasyGuard is
      * @param guard     the address of the guard
      * @param program   the program to be executed by the guard
      */
-    function enableGuard(address guard, bytes32[] calldata program) external {
+    function enableGuard(
+        address guard,
+        bytes32[] calldata program,
+        bool _disableLockoutCheck
+    ) external {
         Safe safe = Safe(payable(address(this)));
         safe.setGuard(guard);
-        EasyGuard(guard).setCheckerProgram(safe, program);
+        EasyGuard(guard).setCheckerProgram(safe, program, _disableLockoutCheck);
     }
 
     /**
@@ -185,12 +192,7 @@ contract EasyGuard is
     }
 
     /**
-     * @dev This function is an implementation of the Guard interface from the @gnosis.pm package.
-     *      It calculates the public keys from the signatures and checks if they are restricted. When we remove the
-     *      restricted signers and don't meet the safe threshold, the transaction gets reverted. This function is
-     *      getting called by the Safe.
-     *
-     *      The whole part of extracting the signature is directly copied from Safe.sol (see comments in the code).
+     * Checking transaction before it is executed, by running an associated checker program
      *
      * @param to                 the contract which is getting called by the transaction
      * @param value              the value field of the transaction
@@ -202,6 +204,7 @@ contract EasyGuard is
      * @param gasToken           used by the safe
      * @param refundReceiver     used by the safe
      * @param signatures         the signatures from all the signers
+     * @param msgSender          the original msg.sender of the transaction
      */
     function checkTransaction(
         address to,
@@ -231,17 +234,19 @@ contract EasyGuard is
         );
 
         // Make sure we can always remove the guard, to protect against lock out.
-        if (
-            to == address(context.safe) &&
-            operation == Enum.Operation.DelegateCall &&
-            data.length == 24
-        ) {
-            (bytes4 selector, address target) = abi.decode(
-                data,
-                (bytes4, address)
-            );
-            if (selector == 0x7f5828d0 && target == address(0)) {
-                return;
+        if (!disableLockoutCheck[context.safe]) {
+            if (
+                to == address(context.safe) &&
+                operation == Enum.Operation.DelegateCall &&
+                data.length == 24
+            ) {
+                (bytes4 selector, address target) = abi.decode(
+                    data,
+                    (bytes4, address)
+                );
+                if (selector == 0x7f5828d0 && target == address(0)) {
+                    return;
+                }
             }
         }
 
