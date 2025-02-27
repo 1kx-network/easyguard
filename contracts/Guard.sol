@@ -11,6 +11,34 @@ import "@openzeppelin/contracts/access/Ownable.sol";
 
 import "./ConditionCheck.sol";
 
+enum Opcode {
+    TRUE,
+    FALSE,
+    TO,
+    FROM,
+    VALUE,
+    CALLDATA,
+    CONSTANT,
+    ADDRESS,
+    DUP,
+    SWAP,
+    MSGSENDER,
+    LT,
+    GT,
+    EQ,
+    ISZERO,
+    NOT,
+    AND,
+    OR,
+    PLUS,
+    MINUS,
+    MUL,
+    DIV,
+    MOD,
+    ISSIGNER,
+    ISOWNER
+}
+
 /**
  * @title Restricted Transaction Guard
  * @notice This contract is a transaction guard for Safe ^1.3.0
@@ -22,7 +50,7 @@ contract RestrictedTransactionGuard is BaseGuard(), ISignatureValidatorConstants
      * @dev stores the address for the contract which checks if the restricted wallets are allowed to execute a
      * transaction
      */
-    mapping(Safe => address) private conditionCheckerAddress;
+    mapping(Safe => bytes32[]) private checkerProgram;
 
     /**
      * @dev taken from a guard example from the gnosis repo.
@@ -37,44 +65,32 @@ contract RestrictedTransactionGuard is BaseGuard(), ISignatureValidatorConstants
      * allowed to execute the given transaction. This checker is only called if there are not enough unrestricted
      * signers in the transaction.
      */
-    function setConditionChecker(Safe safe, address newChecker) external  {
-        conditionCheckerAddress[safe] = newChecker;
+    function setCheckerProgram(Safe safe, bytes32[] calldata newChecker) external  {
+        checkerProgram[safe] = newChecker;
     }
 
-    function getConditionChecker(Safe safe) external view returns (address) {
-        return conditionCheckerAddress[safe];
+    function getConditionChecker(Safe safe) external view returns (bytes32[] memory) {
+        return checkerProgram[safe];
     }
-    
+
     /** 
      *
      * @dev This function is an implementation of the Guard interface from the @gnosis.pm package.
-     * @param safe              the safe which is calling the guard
-     * @param addresses         the array of to check presence in the set of signers
      * @param txHash            the hash of the transaction
      * @param signatures        the signatures of the transaction
      */
-    function addressSignatureMask(Safe safe, address[] memory addresses, bytes32 txHash, bytes memory signatures) external view returns (uint256 addressMask) {
+    function findAllSigners(bytes32 txHash, bytes memory signatures) internal pure returns (address[] memory signers) {
         address currentOwner;
         uint8 v;
         bytes32 r;
         bytes32 s;
         uint256 i;
         
-        addressMask = 0;
-        uint numOwner = safe.getOwners().length;
-        for (i = 0; i < numOwner; i++) {
-            (v, r, s) = signatureSplit(signatures, i);
+        uint256 numSignatures = signatures.length / 0x41;
+        signers = new address[](numSignatures);
 
-            /*
-                * Modification of the original code.
-                * The original code can just check as much signatures as the threshold is. Unfortunately, we cannot do
-                * this, since some signatures might not be valid. So we need to find a way to abort the signature
-                * check. When there is no signature left to check, the value of r is just 0. This means this can be
-                * our abort condition to leave the for loop.
-                */
-            if (uint256(r) == 0) {
-                break;
-            }
+        for (i = 0; i < numSignatures; i++) {
+            (v, r, s) = signatureSplit(signatures, i);
 
             if (v == 0) {
                 // If v is 0 then it is a contract signature
@@ -95,43 +111,44 @@ contract RestrictedTransactionGuard is BaseGuard(), ISignatureValidatorConstants
                 currentOwner = ecrecover(txHash, v, r, s);
             }
 
-            for (uint256 j = 0; j < addresses.length; j++) {
-                if (addresses[j] == currentOwner) {
-                    addressMask |= (1 << j);
-                }
-            }
-        }        
+            signers[i] = currentOwner;
+        }
     }
 
-    function getTxHash(
-        Safe safe,
-        address to,
-        uint256 value,
-        bytes memory data,
-        Enum.Operation operation,
-        uint256 safeTxGas,
-        uint256 baseGas,
-        uint256 gasPrice,
-        address gasToken,
-        address payable refundReceiver
-    ) external view returns (bytes32) {
-        uint256 nonce = safe.nonce() - 1;
-        bytes memory txHashData = safe.encodeTransactionData(
+    function getTxHash(TransactionContext memory context) internal view returns (bytes32) {
+        uint256 nonce = context.safe.nonce() - 1;
+        bytes memory txHashData = context.safe.encodeTransactionData(
             // Transaction info
-            to,
-            value,
-            data,
-            operation,
-            safeTxGas,
+            context.to,
+            context.value,
+            context.data,
+            context.operation,
+            context.safeTxGas,
             // Payment info
-            baseGas,
-            gasPrice,
-            gasToken,
-            refundReceiver,
+            context.baseGas,
+            context.gasPrice,
+            context.gasToken,
+            context.refundReceiver,
             // Signature info
             nonce
         );
         return keccak256(txHashData);
+    }
+    
+    uint256 public constant MAX_STACK_SIZE = 32;
+
+    struct TransactionContext {
+        Safe safe;
+        address to;
+        uint256 value;
+        bytes data;
+        Enum.Operation operation;
+        uint256 safeTxGas;
+        uint256 baseGas;
+        uint256 gasPrice;
+        address gasToken;
+        address payable refundReceiver;
+        address msgSender;     
     }
 
     /**
@@ -166,47 +183,147 @@ contract RestrictedTransactionGuard is BaseGuard(), ISignatureValidatorConstants
         bytes memory signatures,
         address msgSender
     ) external view override {
-        /*
-         * This part is directly copied from: https://github.com/safe-global/safe-contracts/blob/186a21a74b327f17fc41217a927dea7064f74604/contracts/Safe.sol#L125
-         *
-         * We need to calculate the transaction hash to restore the public keys from the signers
-         */
-        Safe safe = Safe(payable(msg.sender));
+        TransactionContext memory context = TransactionContext(Safe(payable(msg.sender)), to, value, data, operation, safeTxGas, baseGas, gasPrice, gasToken, refundReceiver, msgSender);
 
-        if (to == address(safe) && operation == Enum.Operation.DelegateCall && data.length == 24 && bytes4(data) == 0xe19a9dd9) {
-            // This is setting the Guard - this should always be possible for a valid Safe transaction,
-            // to prevent lock out.
+        // Make sure we can always remove the guard, to protect against lock out.
+        if (to == address(context.safe) && operation == Enum.Operation.DelegateCall && data.length == 24 && bytes4(data) == 0xe19a9dd9) {
             return;
         }
-        
-        // We have to make sure the Safe is only used to pay for transactions
 
-        // At this point, we have checked all signatures and the threshold is not reached with unrestricted signatures.
-        // The restricted signers could have the possibility to also sign a transaction, depending on the bot on which
-        // this guard is used. To check this, we ask the conditionCheck, if defined, to raise the threshold if
-        // allowed.
-        if (conditionCheckerAddress[safe] != address(0)) {
-            ConditionCheck checker = ConditionCheck(conditionCheckerAddress[safe]);
+        bytes32[] memory program = checkerProgram[context.safe];
+        if (program.length == 0) {
+            return;
+        }
 
+        bool signersInitialized = false;
+        address[] memory signers;
 
-            require(
-                checker.checkTransaction(safe,
-                to,
-                value,
-                data,
-                operation,
-                safeTxGas,
-                // Payment info
-                baseGas,
-                gasPrice,
-                gasToken,
-                refundReceiver,
-                // Signature info
-                signatures,
-                msgSender
-                ),
-                "this transaction is not allowed by the guard checker"
-            );
+        bytes32[MAX_STACK_SIZE] memory stack;
+        uint256 sp = 0;  // For convenience, there will be one empty slot on the stack
+        uint256 pc = 0;
+        for (;;) {
+            bytes32 instruction = program[pc++];
+            Opcode opcode = Opcode(uint8(bytes1(instruction)));
+            if (opcode == Opcode.TRUE) {
+                require(sp < MAX_STACK_SIZE, "Stack overflow");
+                stack[++sp] = bytes32(uint256(1));
+            } else if (opcode == Opcode.FALSE) {
+                require(sp < MAX_STACK_SIZE, "Stack overflow");
+                stack[++sp] = bytes32(0);
+            } else if (opcode == Opcode.TO) {
+                require(sp < MAX_STACK_SIZE, "Stack overflow");
+                stack[++sp] = bytes32(uint256(uint160(context.to)));
+            } else if (opcode == Opcode.FROM) {
+                require(sp < MAX_STACK_SIZE, "Stack overflow");
+                stack[++sp] = bytes32(uint256(uint160(context.msgSender)));
+            } else if (opcode == Opcode.VALUE) {
+                require(sp < MAX_STACK_SIZE, "Stack overflow");
+                stack[++sp] = bytes32(context.value);
+            } else if (opcode == Opcode.CALLDATA) {
+                require(sp >= 2, "Stack underflow");
+                uint256 offset = uint256(stack[sp - 1]);
+                uint256 length = uint256(stack[sp]);
+                require(context.data.length >= offset + length, "Data out of bounds");
+                bytes memory extractedData = new bytes(length);
+                for (uint256 j = 0; j < length; j++) {
+                    extractedData[j] = context.data[offset + j];
+                }
+                stack[++sp] = bytes32(abi.decode(extractedData, (uint256)));
+            } else if (opcode == Opcode.CONSTANT) {
+                require(sp < MAX_STACK_SIZE, "Stack overflow");
+                stack[++sp] = program[uint256(program[pc++])];
+            } else if (opcode == Opcode.ADDRESS) {
+                require(sp < MAX_STACK_SIZE, "Stack overflow");
+                stack[++sp] = bytes32(uint256(instruction) >> 8);
+            } else if (opcode == Opcode.DUP) {
+                require(sp < MAX_STACK_SIZE, "Stack overflow");
+                require(sp >= 1, "Stack underflow");
+                stack[++sp] = stack[sp];
+            } else if (opcode == Opcode.SWAP) {
+                require(sp >= 2, "Stack underflow");
+                (stack[sp], stack[sp - 1]) = (stack[sp - 1], stack[sp]);
+            } else if (opcode == Opcode.MSGSENDER) {
+                require(sp < MAX_STACK_SIZE, "Stack overflow");
+                stack[++sp] = bytes32(uint256(uint160(msgSender)));
+            } else if (opcode == Opcode.LT) {
+                require(sp >= 2, "Stack underflow");
+                stack[sp - 1] = bytes32(uint256(stack[sp - 1]) < uint256(stack[sp]) ? uint256(1) : uint256(0));
+                sp--;
+            } else if (opcode == Opcode.GT) {
+                require(sp >= 2, "Stack underflow");
+                stack[sp - 1] = bytes32(uint256(stack[sp - 1]) > uint256(stack[sp]) ? uint256(1) : uint256(0));
+                sp--;
+            } else if (opcode == Opcode.EQ) {
+                require(sp >= 2, "Stack underflow");
+                stack[sp - 1] = bytes32(uint256(stack[sp - 1]) == uint256(stack[sp]) ? 1 : uint256(0));
+                sp--;
+            } else if (opcode == Opcode.ISZERO) {
+                require(sp >= 1, "Stack underflow");
+                stack[sp] = bytes32(uint256(stack[sp]) == 0 ? uint256(1) : uint256(0));
+            } else if (opcode == Opcode.NOT) {
+                require(sp >= 1, "Stack underflow");
+                stack[sp] = bytes32(uint256(stack[sp]) == 0 ? uint256(1) : uint256(0));
+            } else if (opcode == Opcode.AND) {
+                require(sp >= 2, "Stack underflow");
+                bool op1 = (uint256(stack[sp - 1]) != 0);
+                bool op2 = (uint256(stack[sp]) != 0);
+                stack[sp - 1] = bytes32(uint256(op1 && op2 ? 1 : 0));
+                sp--;
+            } else if (opcode == Opcode.OR) {
+                require(sp >= 2, "Stack underflow");
+                bool op1 = (uint256(stack[sp - 1]) != 0);
+                bool op2 = (uint256(stack[sp]) != 0);
+                stack[sp - 1] = bytes32(uint256(op1 || op2 ? 1 : 0));
+                sp--;
+            } else if (opcode == Opcode.PLUS) {
+                require(sp >= 2, "Stack underflow");
+                stack[sp - 1] = bytes32(uint256(stack[sp - 1]) + uint256(stack[sp]));
+                sp--;
+            } else if (opcode == Opcode.MINUS) {
+                require(sp >= 2, "Stack underflow");
+                stack[sp - 1] = bytes32(uint256(stack[sp - 1]) - uint256(stack[sp]));
+                sp--;
+            } else if (opcode == Opcode.MUL) {
+                require(sp >= 2, "Stack underflow");
+                stack[sp - 1] = bytes32(uint256(stack[sp - 1]) * uint256(stack[sp]));
+                sp--;
+            } else if (opcode == Opcode.DIV) {
+                require(sp >= 2, "Stack underflow");
+                stack[sp - 1] = bytes32(uint256(stack[sp - 1]) / uint256(stack[sp]));
+                sp--;
+            } else if (opcode == Opcode.MOD) {
+                require(sp >= 2, "Stack underflow");
+                stack[sp - 1] = bytes32(uint256(stack[sp - 1]) % uint256(stack[sp]));
+                sp--;
+            } else if (opcode == Opcode.ISSIGNER) {
+                require(sp >= 1, "Stack underflow");
+                if (!signersInitialized == false) {
+                    bytes32 txHash = getTxHash(context);
+                    signers = findAllSigners(txHash, signatures);
+                    signersInitialized = true;
+                }
+                address signer = address(uint160(uint256(stack[sp])));
+                stack[sp] = bytes32(0);
+                for (uint256 i = 0; i < signers.length; i++) {
+                    if (signers[i] == signer) {
+                        stack[sp] = bytes32(uint256(1));
+                        break;
+                    }
+                }
+            } else if (opcode == Opcode.ISOWNER) {
+                require(sp >= 1, "Stack underflow");
+                address owner = address(uint160(uint256(stack[sp])));
+                address[] memory owners = context.safe.getOwners();
+                stack[sp] = bytes32(0);
+                for (uint256 i = 0; i < owners.length; i++) {
+                    if (owners[i] == owner) {
+                        stack[sp] = bytes32(uint256(1));
+                        break;
+                    }
+                }
+            } else {
+                revert("Invalid opcode");
+            }
         }
     }
     
@@ -214,5 +331,4 @@ contract RestrictedTransactionGuard is BaseGuard(), ISignatureValidatorConstants
     {
         // nothing to do here
     }
-
 }
