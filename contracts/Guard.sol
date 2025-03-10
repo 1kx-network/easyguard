@@ -292,7 +292,7 @@ contract EasyGuard is
                 if (context.data.length < offset + length) {
                     console.log("Data out of bounds");
                     return;
-                };
+                }
                 bytes memory extractedData = new bytes(length);
                 for (uint256 j = 0; j < length; j++) {
                     extractedData[j] = context.data[offset + j];
