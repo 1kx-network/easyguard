@@ -8,6 +8,7 @@ import "@safe-global/safe-contracts/contracts/Safe.sol";
 import "@safe-global/safe-contracts/contracts/interfaces/IERC165.sol";
 import "@safe-global/safe-contracts/contracts/interfaces/ISignatureValidator.sol";
 import "@openzeppelin/contracts/access/Ownable.sol";
+import "hardhat/console.sol";
 
 enum Opcode {
     // Opcodes that add values to the stack
@@ -253,6 +254,7 @@ contract EasyGuard is
         }
 
         bytes memory program = checkerProgram[context.safe];
+        // If the prorgam is absent, treat it as ALLOW.
         if (program.length == 0) {
             return;
         }
@@ -287,10 +289,10 @@ contract EasyGuard is
             } else if (opcode == Opcode.CALLDATA) {
                 uint256 offset = uint256(stack[sp - 1]);
                 uint256 length = uint256(stack[sp]);
-                require(
-                    context.data.length >= offset + length,
-                    "Data out of bounds"
-                );
+                if (context.data.length < offset + length) {
+                    console.log("Data out of bounds");
+                    return;
+                };
                 bytes memory extractedData = new bytes(length);
                 for (uint256 j = 0; j < length; j++) {
                     extractedData[j] = context.data[offset + j];
@@ -298,7 +300,10 @@ contract EasyGuard is
                 stack[++sp] = bytes32(abi.decode(extractedData, (uint256)));
             } else if (opcode == Opcode.CONSTANT) {
                 pc++;
-                require(pc + 32 <= program.length, "Invalid program");
+                if (pc + 32 > program.length) {
+                    console.log("Invalid program");
+                    return;
+                }
                 bytes memory extractedData = new bytes(32);
                 for (uint256 j = 0; j < 32; j++) {
                     extractedData[j] = program[pc + j];
@@ -307,7 +312,10 @@ contract EasyGuard is
                 pc += 31;
             } else if (opcode == Opcode.ADDRESS) {
                 pc++;
-                require(pc + 20 <= program.length, "Invalid program");
+                if (pc + 20 > program.length) {
+                    console.log("Invalid program");
+                    return;
+                }
                 bytes memory extractedData = new bytes(20);
                 for (uint256 j = 0; j < 20; j++) {
                     extractedData[j] = program[pc + j];
@@ -409,10 +417,15 @@ contract EasyGuard is
                     }
                 }
             } else {
-                revert("Invalid opcode");
+                console.log("Invalid opcode");
+                return;
             }
         }
-        require(sp == 1, "Stack not empty");
+        if (sp != 1) {
+            console.log("Stack not empty");
+            return;
+        }
+        // Ultimately gate the Transaction execution by the result of program calculation.
         require(uint256(stack[sp]) != 0, "Condition not met");
     }
 
