@@ -41,6 +41,10 @@ other than its intended purpose:
  - JUMP/JUMPI is supported, thus conditions of any complexity are possible.
 
 
+## Expressions
+
+The opcodes are generated from simple arithmetic expressions with syntax TBD.
+
 ## Lockout prevention
 
 TBD
