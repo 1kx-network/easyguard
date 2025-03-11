@@ -247,7 +247,7 @@ contract EasyGuard is
                     data,
                     (bytes4, address)
                 );
-                if (selector == 0x7f5828d0 && target == address(0)) {
+                if (selector == bytes4(keccak256("setGuard(address)")) && target == address(0)) {
                     return;
                 }
             }
