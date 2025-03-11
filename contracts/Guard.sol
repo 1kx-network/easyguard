@@ -383,11 +383,19 @@ contract EasyGuard is
                 );
                 sp--;
             } else if (opcode == Opcode.DIV) {
+                if (stack[sp] == 0) {
+                    console.log("Division by zero");
+                    return;
+                }
                 stack[sp - 1] = bytes32(
                     uint256(stack[sp - 1]) / uint256(stack[sp])
                 );
                 sp--;
             } else if (opcode == Opcode.MOD) {
+                if (stack[sp] == 0) {
+                    console.log("Division by zero");
+                    return;
+                }
                 stack[sp - 1] = bytes32(
                     uint256(stack[sp - 1]) % uint256(stack[sp])
                 );
