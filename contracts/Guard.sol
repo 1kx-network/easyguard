@@ -46,7 +46,7 @@ contract EasyGuard is
     constructor() {
         // Initialize opcode table
         // Format: (allowed << 4) | (produced << 2) | consumed
-        
+
         // Stop and arithmetic operations
         opcodeTable[0x00] = 0x10; // STOP: 0/0
         opcodeTable[0x01] = 0x15; // ADD: 2/1
@@ -59,7 +59,7 @@ contract EasyGuard is
         opcodeTable[0x08] = 0x17; // ADDMOD: 3/1
         opcodeTable[0x09] = 0x17; // MULMOD: 3/1
         opcodeTable[0x0A] = 0x15; // EXP: 2/1
-        
+
         // Comparison & bitwise logic operations
         opcodeTable[0x10] = 0x15; // LT: 2/1
         opcodeTable[0x11] = 0x15; // GT: 2/1
@@ -71,10 +71,10 @@ contract EasyGuard is
         opcodeTable[0x17] = 0x15; // OR: 2/1
         opcodeTable[0x18] = 0x15; // XOR: 2/1
         opcodeTable[0x19] = 0x11; // NOT: 1/1
-        
+
         // SHA3
         opcodeTable[0x20] = 0x15; // SHA3: 2/1
-        
+
         // Environmental Information
         opcodeTable[0x30] = 0x14; // ADDRESS: 0/1
         opcodeTable[0x31] = 0x14; // BALANCE: 1/1
@@ -87,7 +87,7 @@ contract EasyGuard is
         opcodeTable[0x38] = 0x14; // CODESIZE: 0/1
         opcodeTable[0x39] = 0x17; // CODECOPY: 3/0
         opcodeTable[0x3A] = 0x14; // GASPRICE: 0/1
-        
+
         // Block Information
         opcodeTable[0x40] = 0x14; // BLOCKHASH: 1/1
         opcodeTable[0x41] = 0x14; // COINBASE: 0/1
@@ -95,7 +95,7 @@ contract EasyGuard is
         opcodeTable[0x43] = 0x14; // NUMBER: 0/1
         opcodeTable[0x44] = 0x14; // DIFFICULTY: 0/1
         opcodeTable[0x45] = 0x14; // GASLIMIT: 0/1
-        
+
         // Stack, Memory, Storage and Flow Operations
         opcodeTable[0x50] = 0x11; // POP: 1/0
         opcodeTable[0x51] = 0x11; // MLOAD: 1/1
@@ -141,23 +141,23 @@ contract EasyGuard is
         bool _disableLockoutCheck
     ) external {
         require(checkEvmByteCode(newChecker), "Invalid program bytecode");
-        
+
         // Deploy the new contract using CREATE
         address contractAddress;
         assembly {
             // Get the free memory pointer
             let ptr := mload(0x40)
-            
+
             // Copy the bytecode to memory
             calldatacopy(ptr, newChecker.offset, newChecker.length)
-            
+
             // Create the contract and store the address
             contractAddress := create(0, ptr, newChecker.length)
         }
-        
+
         // Ensure contract creation was successful
         require(contractAddress != address(0), "Contract creation failed");
-        
+
         // Store the contract address and lockout setting
         checkerProgram[safe] = contractAddress;
         disableLockoutCheck[safe] = _disableLockoutCheck;
@@ -275,13 +275,13 @@ contract EasyGuard is
     /**
      * This function checks that the given EVM bytecode is safe to execute to
      * evaluate a conditon.
-     * 
+     *
      *  1. It must not contain any CALL* related opcodes. It is not that those
      *      can wreak havoc - they can't, as we'll calling them as STAICCALL.
      *      But calling external functions means the condition depends on some
      *      uncertain state, which is hard to reason about. Therefore we forbid
      *      it.
-     *      
+     *
      *  2. Branching is allowed.  However, to evaluate all branches, we need to
      *     know where the code *may* jump.  In general, it is hard to fully
      *     determine, therefore we are making a simplifying assumption: an
@@ -310,12 +310,12 @@ contract EasyGuard is
         // Initialize first context
         contextQueue[0] = ExecutionContext(0, new StackEntry[](64)); // Fixed stack size
         uint256 stackSize = 0;
-        
+
         while (queueStart < queueEnd) {
             ExecutionContext memory context = contextQueue[queueStart++];
             uint256 pc = context.pc;
             StackEntry[] memory stack = context.stack;
-            
+
             while (pc < code.length) {
                 uint8 opcode = uint8(code[pc]);
                 uint8 info = opcodeTableMem[opcode];
@@ -325,17 +325,17 @@ contract EasyGuard is
                     console.log("Disallowed or invalid opcode");
                     return false;
                 }
-                
+
                 // Handle PUSH operations (0x60 to 0x7F)
                 if (opcode >= 0x60 && opcode <= 0x7F) {
                     uint8 pushBytes = opcode - 0x5F;
                     uint256 value = 0;
-                    
+
                     // Read the pushed value
                     for (uint256 i = 0; i < pushBytes; i++) {
                         value = (value << 8) | uint8(code[pc + 1 + i]);
                     }
-                    
+
                     // Push constant value to stack
                     stack[stackSize] = StackEntry(true, value);
                     stackSize++;
@@ -346,14 +346,14 @@ contract EasyGuard is
                     if (stackSize < 1) return false;
                     StackEntry memory target = stack[stackSize - 1];
                     stackSize--;
-                    
+
                     // Only allow jumps to constant values
                     if (!target.isConstant) return false;
-                    
+
                     // Validate jump destination
                     if (target.value >= code.length) return false;
                     if (uint8(code[target.value]) != 0x5B) return false; // JUMPDEST
-                    
+
                     pc = target.value;
                     continue;
                 }
@@ -363,20 +363,20 @@ contract EasyGuard is
                     StackEntry memory target = stack[stackSize - 2];
                     // We ignore the condition in stack[stackSize - 1], because we look at both branches
                     stackSize -= 2;
-                    
+
                     // Only allow jumps to constant values
                     if (!target.isConstant) return false;
-                    
+
                     // Validate jump destination
                     if (target.value >= code.length) return false;
                     if (uint8(code[target.value]) != 0x5B) return false; // JUMPDEST
-                    
+
                     // Add fallthrough path to queue
                     if (queueEnd < contextQueue.length) {
                         contextQueue[queueEnd] = ExecutionContext(pc + 1, stack);
                         queueEnd++;
                     }
-                    
+
                     // Continue with jump path
                     pc = target.value;
                     continue;
@@ -387,25 +387,44 @@ contract EasyGuard is
                     stack[stackSize] = StackEntry(true, pc);
                     stackSize++;
                 }
+                // Handle DUP operations (0x80 to 0x8F)
+                else if (opcode >= 0x80 && opcode <= 0x8F) {
+                    uint256 dupIndex = opcode - 0x7F; // DUP1 = 1, DUP2 = 2, etc.
+                    if (stackSize < dupIndex) return false;
+
+                    // Copy the stack entry, preserving its constant/value status
+                    stack[stackSize] = stack[stackSize - dupIndex];
+                    stackSize++;
+                }
+                // Handle SWAP operations (0x90 to 0x9F)
+                else if (opcode >= 0x90 && opcode <= 0x9F) {
+                    uint256 swapIndex = opcode - 0x8F; // SWAP1 = 1, SWAP2 = 2, etc.
+                    if (stackSize <= swapIndex) return false;
+
+                    // Swap the top stack item with the nth item
+                    StackEntry memory temp = stack[stackSize - 1];
+                    stack[stackSize - 1] = stack[stackSize - 1 - swapIndex];
+                    stack[stackSize - 1 - swapIndex] = temp;
+                }
                 // Handle other operations by pushing non-constant values
                 else {
                     uint256 consumed = info & 0x03;
                     uint256 produced = (info >> 2) & 0x03;
-                    
+
                     if (stackSize < consumed) return false;
                     stackSize -= consumed;
-                    
+
                     // Push non-constant results
                     for (uint256 i = 0; i < produced; i++) {
                         stack[stackSize] = StackEntry(false, 0);
                         stackSize++;
                     }
                 }
-                
+
                 pc++;
             }
         }
-        
+
         return true;
     }
 
