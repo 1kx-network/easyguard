@@ -10,40 +10,25 @@ import "@safe-global/safe-contracts/contracts/interfaces/ISignatureValidator.sol
 import "@openzeppelin/contracts/access/Ownable.sol";
 import "hardhat/console.sol";
 
-enum Opcode {
-    // Opcodes that add values to the stack
-    TRUE,
-    FALSE,
-    TO,
-    FROM,
-    VALUE,
-    CONSTANT,
-    ADDRESS,
-    MSGSENDER,
-    DUP, // Dup both takes one value from the stack and adds one.
-    // Opcodes that take one value from the stack and put another one
-    ISSIGNER,
-    ISOWNER,
-    ISZERO,
-    NOT,
-    ALLOW,
-    DENY,
-    // Opcodes that need two values on the stack
-    CALLDATA, // needs offset and length
-    SWAP,
-    LT,
-    GT,
-    EQ,
-    AND,
-    OR,
-    PLUS,
-    MINUS,
-    MUL,
-    DIV,
-    MOD
+interface GuardProgramVerification {
+    struct TransactionContext {
+        Safe safe;
+        address to;
+        uint256 value;
+        bytes data;
+        Enum.Operation operation;
+        uint256 safeTxGas;
+        uint256 baseGas;
+        uint256 gasPrice;
+        address gasToken;
+        address payable refundReceiver;
+        address msgSender;
+    }
+
+    function verify(TransactionContext calldata context, address[] calldata owners, address[] calldata signers) external returns (bool);
 }
 
-/**
+    /**
  * @title Easy Guard
  * @notice This contract is a transaction guard for Safe ^1.3.0
  */
@@ -52,7 +37,7 @@ contract EasyGuard is
     ISignatureValidatorConstants,
     SignatureDecoder
 {
-    mapping(Safe => bytes) private checkerProgram;
+    mapping(Safe => address) private checkerProgram;
     mapping(Safe => bool) private disableLockoutCheck;
 
     // solhint-disable-next-line payable-fallback
@@ -63,13 +48,32 @@ contract EasyGuard is
         bytes calldata newChecker,
         bool _disableLockoutCheck
     ) external {
-        checkerProgram[safe] = newChecker;
+        require(checkEvmByteCode(newChecker), "Invalid program bytecode");
+        
+        // Deploy the new contract using CREATE
+        address contractAddress;
+        assembly {
+            // Get the free memory pointer
+            let ptr := mload(0x40)
+            
+            // Copy the bytecode to memory
+            calldatacopy(ptr, newChecker.offset, newChecker.length)
+            
+            // Create the contract and store the address
+            contractAddress := create(0, ptr, newChecker.length)
+        }
+        
+        // Ensure contract creation was successful
+        require(contractAddress != address(0), "Contract creation failed");
+        
+        // Store the contract address and lockout setting
+        checkerProgram[safe] = contractAddress;
         disableLockoutCheck[safe] = _disableLockoutCheck;
     }
 
     function getCheckerProgram(
         Safe safe
-    ) external view returns (bytes memory) {
+    ) external view returns (address) {
         return checkerProgram[safe];
     }
 
@@ -144,20 +148,8 @@ contract EasyGuard is
         }
     }
 
-    function checkStackOverUnderflow(uint256 sp, Opcode opcode) internal pure {
-        if (opcode <= Opcode.DUP) {
-            require(sp < MAX_STACK_SIZE, "Stack overflow");
-        }
-        // DUP is deliberately in two conditions because it adds one to the stack
-        if (opcode >= Opcode.DUP && opcode < Opcode.CALLDATA) {
-            require(sp >= 1, "Stack underflow");
-        } else {
-            require(sp >= 2, "Stack underflow");
-        }
-    }
-
     function getTxHash(
-        TransactionContext memory context
+        GuardProgramVerification.TransactionContext memory context
     ) internal view returns (bytes32) {
         uint256 nonce = context.safe.nonce() - 1;
         bytes memory txHashData = context.safe.encodeTransactionData(
@@ -178,20 +170,160 @@ contract EasyGuard is
         return keccak256(txHashData);
     }
 
-    uint256 public constant MAX_STACK_SIZE = 64;
-
-    struct TransactionContext {
-        Safe safe;
-        address to;
+    struct StackEntry {
+        bool isConstant;
         uint256 value;
-        bytes data;
-        Enum.Operation operation;
-        uint256 safeTxGas;
-        uint256 baseGas;
-        uint256 gasPrice;
-        address gasToken;
-        address payable refundReceiver;
-        address msgSender;
+    }
+
+    struct ExecutionContext {
+        uint256 pc;
+        StackEntry[] stack;
+    }
+
+    function checkEvmByteCode(bytes memory code) public pure returns (bool) {
+        // Queue of contexts to process
+        ExecutionContext[] memory contextQueue = new ExecutionContext[](16); // Fixed size for simplicity
+        uint256 queueStart = 0;
+        uint256 queueEnd = 1;
+        
+        // Initialize first context
+        contextQueue[0] = ExecutionContext(0, new StackEntry[](64)); // Fixed stack size
+        uint256 stackSize = 0;
+        
+        while (queueStart < queueEnd) {
+            ExecutionContext memory context = contextQueue[queueStart++];
+            uint256 pc = context.pc;
+            StackEntry[] memory stack = context.stack;
+            
+            while (pc < code.length) {
+                uint8 opcode = uint8(code[pc]);
+                
+                // Check for disallowed opcodes
+                if (
+                    // External calls
+                    (opcode == 0xF0) || // CREATE
+                    (opcode == 0xF1) || // CALL
+                    (opcode == 0xF2) || // CALLCODE
+                    (opcode == 0xF4) || // DELEGATECALL
+                    (opcode == 0xF5) || // CREATE2
+                    (opcode == 0xFA) || // STATICCALL
+                    
+                    // External code access
+                    (opcode == 0x3B) || // EXTCODECOPY
+                    (opcode == 0x3C) || // EXTCODESIZE
+                    (opcode == 0x3F) || // EXTCODEHASH
+                    
+                    // Return data
+                    (opcode == 0x3D) || // RETURNDATASIZE
+                    (opcode == 0x3E) || // RETURNDATACOPY
+                    
+                    // LOG operations
+                    (opcode == 0xA0) || // LOG0
+                    (opcode == 0xA1) || // LOG1
+                    (opcode == 0xA2) || // LOG2
+                    (opcode == 0xA3) || // LOG3
+                    (opcode == 0xA4) || // LOG4
+                    
+                    // Self destruct
+                    (opcode == 0xFF) || // SELFDESTRUCT
+                    
+                    // Other dangerous opcodes
+                    (opcode == 0xFE)    // INVALID
+                ) {
+                    return false;
+                }
+                
+                // Handle PUSH operations (0x60 to 0x7F)
+                if (opcode >= 0x60 && opcode <= 0x7F) {
+                    uint8 pushBytes = opcode - 0x5F;
+                    uint256 value = 0;
+                    
+                    // Read the pushed value
+                    for (uint256 i = 0; i < pushBytes; i++) {
+                        value = (value << 8) | uint8(code[pc + 1 + i]);
+                    }
+                    
+                    // Push constant value to stack
+                    stack[stackSize] = StackEntry(true, value);
+                    stackSize++;
+                    pc += pushBytes;
+                }
+                // Handle JUMP
+                else if (opcode == 0x56) { // JUMP
+                    if (stackSize < 1) return false;
+                    StackEntry memory target = stack[stackSize - 1];
+                    stackSize--;
+                    
+                    // Only allow jumps to constant values
+                    if (!target.isConstant) return false;
+                    
+                    // Validate jump destination
+                    if (target.value >= code.length) return false;
+                    if (uint8(code[target.value]) != 0x5B) return false; // JUMPDEST
+                    
+                    pc = target.value;
+                    continue;
+                }
+                // Handle JUMPI
+                else if (opcode == 0x57) { // JUMPI
+                    if (stackSize < 2) return false;
+                    StackEntry memory target = stack[stackSize - 2];
+                    StackEntry memory condition = stack[stackSize - 1];
+                    stackSize -= 2;
+                    
+                    // Only allow jumps to constant values
+                    if (!target.isConstant) return false;
+                    
+                    // Validate jump destination
+                    if (target.value >= code.length) return false;
+                    if (uint8(code[target.value]) != 0x5B) return false; // JUMPDEST
+                    
+                    // Add fallthrough path to queue
+                    if (queueEnd < contextQueue.length) {
+                        contextQueue[queueEnd] = ExecutionContext(pc + 1, stack);
+                        queueEnd++;
+                    }
+                    
+                    // Continue with jump path
+                    pc = target.value;
+                    continue;
+                }
+                // Handle PC
+                else if (opcode == 0x58) { // PC
+                    stack[stackSize] = StackEntry(true, pc);
+                    stackSize++;
+                }
+                // Handle other operations by pushing non-constant values
+                else {
+                    // Simple stack manipulation based on opcode
+                    uint256 consumed = 0;
+                    uint256 produced = 0;
+                    
+                    // Add stack effect for common operations
+                    if (opcode >= 0x01 && opcode <= 0x0B) { // Arithmetic
+                        consumed = 2;
+                        produced = 1;
+                    } else if (opcode >= 0x10 && opcode <= 0x1B) { // Comparison
+                        consumed = 2;
+                        produced = 1;
+                    }
+                    // Add more cases as needed
+                    
+                    if (stackSize < consumed) return false;
+                    stackSize -= consumed;
+                    
+                    // Push non-constant results
+                    for (uint256 i = 0; i < produced; i++) {
+                        stack[stackSize] = StackEntry(false, 0);
+                        stackSize++;
+                    }
+                }
+                
+                pc++;
+            }
+        }
+        
+        return true;
     }
 
     /**
@@ -222,7 +354,7 @@ contract EasyGuard is
         bytes memory signatures,
         address msgSender
     ) external view override {
-        TransactionContext memory context = TransactionContext(
+        GuardProgramVerification.TransactionContext memory context = GuardProgramVerification.TransactionContext(
             Safe(payable(msg.sender)),
             to,
             value,
@@ -253,188 +385,27 @@ contract EasyGuard is
             }
         }
 
-        bytes memory program = checkerProgram[context.safe];
-        // If the prorgam is absent, treat it as ALLOW.
-        if (program.length == 0) {
-            return;
-        }
-
-        bool signersInitialized = false;
+        address[] memory owners;
         address[] memory signers;
 
-        bytes32[MAX_STACK_SIZE] memory stack;
-        uint256 sp = 0;  // For convenience, there will be one empty slot on the stack
-        for (uint256 pc = 0; pc < program.length; pc++) {
-            bytes32 instruction = program[pc];
-            Opcode opcode = Opcode(uint8(bytes1(instruction)));
-            checkStackOverUnderflow(sp, opcode);
-            if (opcode == Opcode.ALLOW) {
-                if (uint256(stack[sp--]) == uint256(1)) {
-                    return;
-                }
-            } else if (opcode == Opcode.DENY) {
-                if (uint256(stack[sp--]) == uint256(1)) {
-                    revert("Denied by guard");
-                }
-            } else if (opcode == Opcode.TRUE) {
-                stack[++sp] = bytes32(uint256(1));
-            } else if (opcode == Opcode.FALSE) {
-                stack[++sp] = bytes32(0);
-            } else if (opcode == Opcode.TO) {
-                stack[++sp] = bytes32(uint256(uint160(context.to)));
-            } else if (opcode == Opcode.FROM) {
-                stack[++sp] = bytes32(uint256(uint160(context.msgSender)));
-            } else if (opcode == Opcode.VALUE) {
-                stack[++sp] = bytes32(context.value);
-            } else if (opcode == Opcode.CALLDATA) {
-                uint256 offset = uint256(stack[sp - 1]);
-                uint256 length = uint256(stack[sp]);
-                if (context.data.length < offset + length) {
-                    console.log("Data out of bounds");
-                    return;
-                }
-                bytes memory extractedData = new bytes(length);
-                for (uint256 j = 0; j < length; j++) {
-                    extractedData[j] = context.data[offset + j];
-                }
-                stack[++sp] = bytes32(abi.decode(extractedData, (uint256)));
-            } else if (opcode == Opcode.CONSTANT) {
-                pc++;
-                if (pc + 32 > program.length) {
-                    console.log("Invalid program");
-                    return;
-                }
-                bytes memory extractedData = new bytes(32);
-                for (uint256 j = 0; j < 32; j++) {
-                    extractedData[j] = program[pc + j];
-                }
-                stack[++sp] = bytes32(abi.decode(extractedData, (uint256)));
-                pc += 31;
-            } else if (opcode == Opcode.ADDRESS) {
-                pc++;
-                if (pc + 20 > program.length) {
-                    console.log("Invalid program");
-                    return;
-                }
-                bytes memory extractedData = new bytes(20);
-                for (uint256 j = 0; j < 20; j++) {
-                    extractedData[j] = program[pc + j];
-                }
-                stack[++sp] = bytes32(abi.decode(extractedData, (uint256)));
-                pc += 19;
-            } else if (opcode == Opcode.DUP) {
-                stack[++sp] = stack[sp];
-            } else if (opcode == Opcode.SWAP) {
-                (stack[sp], stack[sp - 1]) = (stack[sp - 1], stack[sp]);
-            } else if (opcode == Opcode.MSGSENDER) {
-                stack[++sp] = bytes32(uint256(uint160(msgSender)));
-            } else if (opcode == Opcode.LT) {
-                stack[sp - 1] = bytes32(
-                    uint256(stack[sp - 1]) < uint256(stack[sp])
-                        ? uint256(1)
-                        : uint256(0)
-                );
-                sp--;
-            } else if (opcode == Opcode.GT) {
-                stack[sp - 1] = bytes32(
-                    uint256(stack[sp - 1]) > uint256(stack[sp])
-                        ? uint256(1)
-                        : uint256(0)
-                );
-                sp--;
-            } else if (opcode == Opcode.EQ) {
-                stack[sp - 1] = bytes32(
-                    uint256(stack[sp - 1]) == uint256(stack[sp])
-                        ? 1
-                        : uint256(0)
-                );
-                sp--;
-            } else if (opcode == Opcode.ISZERO) {
-                stack[sp] = bytes32(
-                    uint256(stack[sp]) == 0 ? uint256(1) : uint256(0)
-                );
-            } else if (opcode == Opcode.NOT) {
-                stack[sp] = bytes32(
-                    uint256(stack[sp]) == 0 ? uint256(1) : uint256(0)
-                );
-            } else if (opcode == Opcode.AND) {
-                bool op1 = (uint256(stack[sp - 1]) != 0);
-                bool op2 = (uint256(stack[sp]) != 0);
-                stack[sp - 1] = bytes32(uint256(op1 && op2 ? 1 : 0));
-                sp--;
-            } else if (opcode == Opcode.OR) {
-                bool op1 = (uint256(stack[sp - 1]) != 0);
-                bool op2 = (uint256(stack[sp]) != 0);
-                stack[sp - 1] = bytes32(uint256(op1 || op2 ? 1 : 0));
-                sp--;
-            } else if (opcode == Opcode.PLUS) {
-                stack[sp - 1] = bytes32(
-                    uint256(stack[sp - 1]) + uint256(stack[sp])
-                );
-                sp--;
-            } else if (opcode == Opcode.MINUS) {
-                stack[sp - 1] = bytes32(
-                    uint256(stack[sp - 1]) - uint256(stack[sp])
-                );
-                sp--;
-            } else if (opcode == Opcode.MUL) {
-                stack[sp - 1] = bytes32(
-                    uint256(stack[sp - 1]) * uint256(stack[sp])
-                );
-                sp--;
-            } else if (opcode == Opcode.DIV) {
-                if (stack[sp] == 0) {
-                    console.log("Division by zero");
-                    return;
-                }
-                stack[sp - 1] = bytes32(
-                    uint256(stack[sp - 1]) / uint256(stack[sp])
-                );
-                sp--;
-            } else if (opcode == Opcode.MOD) {
-                if (stack[sp] == 0) {
-                    console.log("Division by zero");
-                    return;
-                }
-                stack[sp - 1] = bytes32(
-                    uint256(stack[sp - 1]) % uint256(stack[sp])
-                );
-                sp--;
-            } else if (opcode == Opcode.ISSIGNER) {
-                if (!signersInitialized) {
-                    bytes32 txHash = getTxHash(context);
-                    signers = findAllSigners(txHash, signatures);
-                    signersInitialized = true;
-                }
-                address signer = address(uint160(uint256(stack[sp])));
-                stack[sp] = bytes32(0);
-                for (uint256 i = 0; i < signers.length; i++) {
-                    if (signers[i] == signer) {
-                        stack[sp] = bytes32(uint256(1));
-                        break;
-                    }
-                }
-            } else if (opcode == Opcode.ISOWNER) {
-                address owner = address(uint160(uint256(stack[sp])));
-                address[] memory owners = context.safe.getOwners();
-                stack[sp] = bytes32(0);
-                for (uint256 i = 0; i < owners.length; i++) {
-                    if (owners[i] == owner) {
-                        stack[sp] = bytes32(uint256(1));
-                        break;
-                    }
-                }
-            } else {
-                console.log("Invalid opcode");
-                return;
-            }
-        }
-        if (sp != 1) {
-            console.log("Stack not empty");
-            return;
-        }
-        // Ultimately gate the Transaction execution by the result of program calculation.
-        require(uint256(stack[sp]) != 0, "Condition not met");
+        GuardProgramVerification program = GuardProgramVerification(checkerProgram[context.safe]);
+
+        // Get the signers from the signatures
+        signers = findAllSigners(getTxHash(context), signatures);
+        // Get the list of owners from the safe
+        owners = context.safe.getOwners();
+
+        // Call the program as staticcall and revert if verification fails
+        (bool success, bytes memory returnData) = address(program).staticcall(
+            abi.encodeWithSelector(
+                GuardProgramVerification.verify.selector,  // will be ignored
+                context,
+                owners,
+                signers
+            )
+        );
+
+        require(success && abi.decode(returnData, (bool)), "Guard: Transaction verification failed");
     }
 
     function checkAfterExecution(bytes32 txHash, bool success) external {
