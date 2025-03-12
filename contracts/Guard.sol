@@ -322,6 +322,7 @@ contract EasyGuard is
 
                 // If it is an invalid
                 if ((info & VALID_OPCODE) == 0) {
+                    console.log("Disallowed or invalid opcode");
                     return false;
                 }
                 
