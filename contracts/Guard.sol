@@ -39,6 +39,98 @@ contract EasyGuard is
 {
     mapping(Safe => address) private checkerProgram;
     mapping(Safe => bool) private disableLockoutCheck;
+    uint8[256] private opcodeTable;
+
+    uint8 constant VALID_OPCODE = 0x10;  // Bit mask for valid opcodes in opcodeTable
+
+    constructor() {
+        // Initialize opcode table
+        // Format: (allowed << 4) | (produced << 2) | consumed
+        
+        // Stop and arithmetic operations
+        opcodeTable[0x00] = 0x10; // STOP: 0/0
+        opcodeTable[0x01] = 0x15; // ADD: 2/1
+        opcodeTable[0x02] = 0x15; // MUL: 2/1
+        opcodeTable[0x03] = 0x15; // SUB: 2/1
+        opcodeTable[0x04] = 0x15; // DIV: 2/1
+        opcodeTable[0x05] = 0x15; // SDIV: 2/1
+        opcodeTable[0x06] = 0x15; // MOD: 2/1
+        opcodeTable[0x07] = 0x15; // SMOD: 2/1
+        opcodeTable[0x08] = 0x17; // ADDMOD: 3/1
+        opcodeTable[0x09] = 0x17; // MULMOD: 3/1
+        opcodeTable[0x0A] = 0x15; // EXP: 2/1
+        
+        // Comparison & bitwise logic operations
+        opcodeTable[0x10] = 0x15; // LT: 2/1
+        opcodeTable[0x11] = 0x15; // GT: 2/1
+        opcodeTable[0x12] = 0x15; // SLT: 2/1
+        opcodeTable[0x13] = 0x15; // SGT: 2/1
+        opcodeTable[0x14] = 0x15; // EQ: 2/1
+        opcodeTable[0x15] = 0x11; // ISZERO: 1/1
+        opcodeTable[0x16] = 0x15; // AND: 2/1
+        opcodeTable[0x17] = 0x15; // OR: 2/1
+        opcodeTable[0x18] = 0x15; // XOR: 2/1
+        opcodeTable[0x19] = 0x11; // NOT: 1/1
+        
+        // SHA3
+        opcodeTable[0x20] = 0x15; // SHA3: 2/1
+        
+        // Environmental Information
+        opcodeTable[0x30] = 0x14; // ADDRESS: 0/1
+        opcodeTable[0x31] = 0x14; // BALANCE: 1/1
+        opcodeTable[0x32] = 0x14; // ORIGIN: 0/1
+        opcodeTable[0x33] = 0x14; // CALLER: 0/1
+        opcodeTable[0x34] = 0x14; // CALLVALUE: 0/1
+        opcodeTable[0x35] = 0x11; // CALLDATALOAD: 1/1
+        opcodeTable[0x36] = 0x14; // CALLDATASIZE: 0/1
+        opcodeTable[0x37] = 0x17; // CALLDATACOPY: 3/0
+        opcodeTable[0x38] = 0x14; // CODESIZE: 0/1
+        opcodeTable[0x39] = 0x17; // CODECOPY: 3/0
+        opcodeTable[0x3A] = 0x14; // GASPRICE: 0/1
+        
+        // Block Information
+        opcodeTable[0x40] = 0x14; // BLOCKHASH: 1/1
+        opcodeTable[0x41] = 0x14; // COINBASE: 0/1
+        opcodeTable[0x42] = 0x14; // TIMESTAMP: 0/1
+        opcodeTable[0x43] = 0x14; // NUMBER: 0/1
+        opcodeTable[0x44] = 0x14; // DIFFICULTY: 0/1
+        opcodeTable[0x45] = 0x14; // GASLIMIT: 0/1
+        
+        // Stack, Memory, Storage and Flow Operations
+        opcodeTable[0x50] = 0x11; // POP: 1/0
+        opcodeTable[0x51] = 0x11; // MLOAD: 1/1
+        opcodeTable[0x52] = 0x15; // MSTORE: 2/0
+        opcodeTable[0x53] = 0x15; // MSTORE8: 2/0
+        opcodeTable[0x54] = 0x11; // SLOAD: 1/1
+        opcodeTable[0x55] = 0x15; // SSTORE: 2/0
+        opcodeTable[0x56] = 0x11; // JUMP: 1/0
+        opcodeTable[0x57] = 0x12; // JUMPI: 2/0
+        opcodeTable[0x58] = 0x14; // PC: 0/1
+        opcodeTable[0x59] = 0x14; // MSIZE: 0/1
+        opcodeTable[0x5B] = 0x10; // JUMPDEST: 0/0
+
+        // Push operations (0x60-0x7F)
+        for (uint8 i = 0x60; i <= 0x7F; i++) {
+            opcodeTable[i] = 0x14; // PUSH1-PUSH32: 0/1
+        }
+
+        // Duplication operations (0x80-0x8F)
+        for (uint8 i = 0x80; i <= 0x8F; i++) {
+            opcodeTable[i] = 0x14; // DUP1-DUP16: 1/2 (duplicates top stack item)
+        }
+
+        // Exchange operations (0x90-0x9F)
+        for (uint8 i = 0x90; i <= 0x9F; i++) {
+            opcodeTable[i] = 0x12; // SWAP1-SWAP16: 2/2 (swaps stack items)
+        }
+
+        // Logging operations are not allowed
+        // Calls are not allowed
+        // TODO: we may allow STATICCALL to a whitelist of contracts and methods.
+
+        // System operations: REVERT is allowed
+        opcodeTable[0xFD] = 0x15; // REVERT: 2/0
+    }
 
     // solhint-disable-next-line payable-fallback
     fallback() external {}
@@ -180,12 +272,41 @@ contract EasyGuard is
         StackEntry[] stack;
     }
 
-    function checkEvmByteCode(bytes memory code) public pure returns (bool) {
+    /**
+     * This function checks that the given EVM bytecode is safe to execute to
+     * evaluate a conditon.
+     * 
+     *  1. It must not contain any CALL* related opcodes. It is not that those
+     *      can wreak havoc - they can't, as we'll calling them as STAICCALL.
+     *      But calling external functions means the condition depends on some
+     *      uncertain state, which is hard to reason about. Therefore we forbid
+     *      it.
+     *      
+     *  2. Branching is allowed.  However, to evaluate all branches, we need to
+     *     know where the code *may* jump.  In general, it is hard to fully
+     *     determine, therefore we are making a simplifying assumption: an
+     *     address on the stack before the JUMP/JUMPI must be known during
+     *     analysis, either from PUSH*, or from PC. This will cover most
+     *     contracts, except hand crafted hackish corner cases.
+     */
+    function checkEvmByteCode(bytes memory code) public view returns (bool) {
+        // Load opcode table into memory at the start
+        uint8[256] memory opcodeTableMem;
+        for (uint256 i = 0; i < 8; i += 1) {
+            bytes32 packed;
+            assembly {
+                packed := sload(add(opcodeTable.slot, i))
+            }
+            for (uint256 j = 0; j < 32 && i * 32 + j < 256; j++) {
+                opcodeTableMem[i * 32 + j] = uint8(uint256(packed >> (248 - j * 8)) & 0xFF);
+            }
+        }
+
         // Queue of contexts to process
         ExecutionContext[] memory contextQueue = new ExecutionContext[](16); // Fixed size for simplicity
         uint256 queueStart = 0;
         uint256 queueEnd = 1;
-        
+
         // Initialize first context
         contextQueue[0] = ExecutionContext(0, new StackEntry[](64)); // Fixed stack size
         uint256 stackSize = 0;
@@ -197,39 +318,10 @@ contract EasyGuard is
             
             while (pc < code.length) {
                 uint8 opcode = uint8(code[pc]);
-                
-                // Check for disallowed opcodes
-                if (
-                    // External calls
-                    (opcode == 0xF0) || // CREATE
-                    (opcode == 0xF1) || // CALL
-                    (opcode == 0xF2) || // CALLCODE
-                    (opcode == 0xF4) || // DELEGATECALL
-                    (opcode == 0xF5) || // CREATE2
-                    (opcode == 0xFA) || // STATICCALL
-                    
-                    // External code access
-                    (opcode == 0x3B) || // EXTCODECOPY
-                    (opcode == 0x3C) || // EXTCODESIZE
-                    (opcode == 0x3F) || // EXTCODEHASH
-                    
-                    // Return data
-                    (opcode == 0x3D) || // RETURNDATASIZE
-                    (opcode == 0x3E) || // RETURNDATACOPY
-                    
-                    // LOG operations
-                    (opcode == 0xA0) || // LOG0
-                    (opcode == 0xA1) || // LOG1
-                    (opcode == 0xA2) || // LOG2
-                    (opcode == 0xA3) || // LOG3
-                    (opcode == 0xA4) || // LOG4
-                    
-                    // Self destruct
-                    (opcode == 0xFF) || // SELFDESTRUCT
-                    
-                    // Other dangerous opcodes
-                    (opcode == 0xFE)    // INVALID
-                ) {
+                uint8 info = opcodeTableMem[opcode];
+
+                // If it is an invalid
+                if ((info & VALID_OPCODE) == 0) {
                     return false;
                 }
                 
@@ -268,7 +360,7 @@ contract EasyGuard is
                 else if (opcode == 0x57) { // JUMPI
                     if (stackSize < 2) return false;
                     StackEntry memory target = stack[stackSize - 2];
-                    StackEntry memory condition = stack[stackSize - 1];
+                    // We ignore the condition in stack[stackSize - 1], because we look at both branches
                     stackSize -= 2;
                     
                     // Only allow jumps to constant values
@@ -290,24 +382,14 @@ contract EasyGuard is
                 }
                 // Handle PC
                 else if (opcode == 0x58) { // PC
+                    // Since we know the PC, it is also kind of predictable, just as PUSH* constants.
                     stack[stackSize] = StackEntry(true, pc);
                     stackSize++;
                 }
                 // Handle other operations by pushing non-constant values
                 else {
-                    // Simple stack manipulation based on opcode
-                    uint256 consumed = 0;
-                    uint256 produced = 0;
-                    
-                    // Add stack effect for common operations
-                    if (opcode >= 0x01 && opcode <= 0x0B) { // Arithmetic
-                        consumed = 2;
-                        produced = 1;
-                    } else if (opcode >= 0x10 && opcode <= 0x1B) { // Comparison
-                        consumed = 2;
-                        produced = 1;
-                    }
-                    // Add more cases as needed
+                    uint256 consumed = info & 0x03;
+                    uint256 produced = (info >> 2) & 0x03;
                     
                     if (stackSize < consumed) return false;
                     stackSize -= consumed;
@@ -368,7 +450,7 @@ contract EasyGuard is
             msgSender
         );
 
-        // Make sure we can always remove the guard, to protect against lock out.
+        // Make sure we can always remove the guard, to protect us against lock out.
         if (!disableLockoutCheck[context.safe]) {
             if (
                 to == address(context.safe) &&
