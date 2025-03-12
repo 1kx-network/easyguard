@@ -30,22 +30,23 @@ could be set for any Safe. The condition to check is then programmed
 by using a simple expression that consists of addresses of owners,
 signers, address constants, and boolean and arithmetic expressions.
 
-The expression is defined as bytecode of a simple stack VM.
+The expression is represented by an EVM code deployed as a separate
+contract.  Importantly, this code is sanitized by the guard before
+being deployed, so that we have a guarantee that it can do nothing
+other than its intended purpose:
 
+ - It can access memory, stack, storage.
+ - It *cannot* make any calls.
+ - It can access CALLDATA, so it will see any arguments passed to it.
+ - JUMP/JUMPI is supported, thus conditions of any complexity are possible.
 
-## Expressions
-
-The opcodes are generated from simple arithmetic expressions with syntax TBD.
 
 ## Lockout prevention
 
-The plan is to be able to statically verify that a given condition
-leaves an opportunity for a valid set of Safe signers to disable the
-Guard, if they choose so.  Because the VM opcode langauge is simple
-and deliberately non-turing complete, it will always be possible to
-guarantee correct verfication of Safe state after transaction and
-ability to disable the guard.
+TBD
 
-Note: some users might choose to ignore this, either because they have
-high confidence in their expression or becuase they have set up Safe
-recovery.
+Lockout prevention is more difficult in an EVM-based
+implementation, but is still possible. We can do best effort symbolic
+compuation on it (client-side), and if we are able to give a
+conclusive answer, we'll give it. If we are not able to do this, we'll
+warn the user before deploying the contract.
