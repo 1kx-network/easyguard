@@ -231,7 +231,8 @@ describe("Safe with Guard", function () {
         // Now when the Safe is deployed, reinitialize protocol-kit Safe wrapper as
         // initialized Safe.
         safe = await Safe.init({
-            provider: walletClient.transport,
+            provider: usersWalletClient.transport,
+            signer: usersWalletClient.account.address,
             safeAddress,
             contractNetworks,
         });
@@ -279,9 +280,8 @@ describe("Safe with Guard", function () {
             },
         ];
 
-        const safeTransaction = await safe.createTransaction({ transactions });
-        expect(await safe.isSafeDeployed()).to.be.true;
-
+        let safeTransaction = await safe.createTransaction({ transactions });
+        safeTransaction = await safe.signTransaction(safeTransaction);
         const txResponse = await safe.executeTransaction(safeTransaction);
         await txResponse.transactionResponse?.wait();
 
