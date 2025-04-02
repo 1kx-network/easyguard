@@ -34,7 +34,6 @@ interface GuardProgramVerification {
  */
 contract EasyGuard is
     BaseGuard,
-    ISignatureValidatorConstants,
     SignatureDecoder
 {
     mapping(Safe => address) private checkerProgram;
