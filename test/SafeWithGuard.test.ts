@@ -9,31 +9,7 @@ import Safe, {
 import hre from "hardhat";
 import { WalletClient, PublicClient, zeroAddress, parseEther, encodeFunctionData, toHex} from "viem";
 import { MetaTransactionData, OperationType } from "@safe-global/types-kit";
-
-const GUARD_ABI = [
-    {
-        type: 'function',
-        name: 'setCheckerProgram',
-        inputs: [
-            { type: 'address', name: 'safe' },
-            { type: 'bytes', name: 'newChecker' },
-            { type: 'bool', name: '_disableLockoutCheck' }
-        ],
-        outputs: [],
-        stateMutability: 'nonpayable'
-    },
-    {
-        type: 'function',
-        name: 'enableGuard',
-        inputs: [
-            { type: 'address', name: 'guard' },
-            { type: 'bytes', name: 'program' },
-            { type: 'bool', name: '_disableLockoutCheck' }
-        ],
-        outputs: [],
-        stateMutability: 'nonpayable'
-    }
-];
+import EasyGuardArtifact from "../artifacts/contracts/Guard.sol/EasyGuard.json";
 
 describe("Safe with Guard", function () {
     let namedAccounts: { [name: string]: string };
@@ -161,7 +137,7 @@ describe("Safe with Guard", function () {
 
         // Enable guard via delegate call
         const enableGuardData = encodeFunctionData({
-            abi: GUARD_ABI,
+            abi: EasyGuardArtifact.abi,
             functionName: 'enableGuard',
             args: [easyGuardAddress, trueProgram, false]
         });
@@ -233,7 +209,7 @@ describe("Safe with Guard", function () {
 
         // Enable guard via delegate call
         const enableGuardData = encodeFunctionData({
-            abi: GUARD_ABI,
+            abi: EasyGuardArtifact.abi,
             functionName: 'enableGuard',
             args: [easyGuardAddress, falseProgram, false]
         });
