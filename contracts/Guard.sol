@@ -143,17 +143,33 @@ contract EasyGuard is
     ) external {
         require(checkEvmByteCode(newChecker), "Invalid program bytecode");
 
+        uint16 length = uint16(newChecker.length);
+        /**
+          The bytecode below means the following (length will be replaced at checker construction).
+          PUSH2 <LENGTH>
+          DUP1
+          PUSH1 11
+          PUSH0
+          CODECOPY
+          PUSH0
+          SWAP1
+          RETURN
+
+          It just returns the code immediately following it.
+        */
         // Deploy the new contract using CREATE
         address contractAddress;
         assembly {
             // Get the free memory pointer
             let ptr := mload(0x40)
-
+            mstore(ptr, shl(176, 0x61000080600a5f395ff3))
+            mstore8(add(ptr, 1), shr(8, length))
+            mstore8(add(ptr, 2), length)
             // Copy the bytecode to memory
-            calldatacopy(ptr, newChecker.offset, newChecker.length)
+            calldatacopy(add(ptr, 10), newChecker.offset, length)
 
             // Create the contract and store the address
-            contractAddress := create(0, ptr, newChecker.length)
+            contractAddress := create(0, ptr, add(10, length))
         }
 
         // Ensure contract creation was successful
@@ -161,6 +177,7 @@ contract EasyGuard is
 
         // Store the contract address and lockout setting
         checkerProgram[safe] = contractAddress;
+        console.log("contractAddress", contractAddress);
         disableLockoutCheck[safe] = _disableLockoutCheck;
     }
 

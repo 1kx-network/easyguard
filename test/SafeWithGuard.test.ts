@@ -268,7 +268,7 @@ describe("Safe with Guard", function () {
         // 3. Enable guard with empty program
 
         // Empty program bytecode (just returns true)
-        const trueProgram = "0x600880805f395ff360205f80158152f3";
+        const trueProgram = "0x60205f80158152f3";
 
         // Enable guard via delegate call
         const enableGuardData = encodeFunctionData({
@@ -305,7 +305,7 @@ describe("Safe with Guard", function () {
         let checkerProgram = await publicClient.getCode({address: checkerProgramAddress});
         console.log("checker program: ", checkerProgram);
 
-        expect(checkerProgram.substring(2)).to.be.equal(trueProgram.substring(18));
+        expect(checkerProgram).to.be.equal(trueProgram);
 
 
         // 4. Execute a test transaction through the Safe
@@ -338,8 +338,9 @@ describe("Safe with Guard", function () {
 
         // 3. Enable guard with empty program
 
-        // Empty program bytecode (just returns true)
-        const falseProgram = "0x600880805f395ff360205f808052f300";
+        // Empty program bytecode (just returns false)
+        // const falseProgram = "0x600880805f395ff360205f808052f300";
+        const falseProgram = "0x60205f808052f300";
 
         // Enable guard via delegate call
         const enableGuardData = encodeFunctionData({
@@ -376,8 +377,7 @@ describe("Safe with Guard", function () {
         let checkerProgram = await publicClient.getCode({address: checkerProgramAddress});
         console.log("checker program: ", checkerProgram);
 
-        expect(checkerProgram.substring(2)).to.be.equal(falseProgram.substring(18));
-
+        expect(checkerProgram).to.be.equal(falseProgram);
 
         // 4. Execute a test transaction through the Safe
         const transferAmount = parseEther("0.1");
