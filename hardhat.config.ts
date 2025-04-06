@@ -16,7 +16,7 @@ const config: HardhatUserConfig = {
         hardhat: {
             // For hardhat testing
             saveDeployments: true,
-        },
+        }
     },
     namedAccounts: {
         deployer: {
@@ -28,6 +28,10 @@ const config: HardhatUserConfig = {
     },
     paths: {
         deploy: "deploy",
+    },
+    mocha: {
+        parallel: false,
+        asyncOnly: true
     },
 };
 

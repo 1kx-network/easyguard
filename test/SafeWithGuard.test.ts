@@ -1,16 +1,13 @@
 import { expect } from "chai";
+// import "@nomicfoundation/hardhat-chai-matchers";
 import { deployments } from "hardhat";
 import Safe, {
-  ContractNetworksConfig,
-  PredictedSafeProps,
+    ContractNetworksConfig,
+    PredictedSafeProps,
     SafeAccountConfig,
-    SafeFactory,
-  SafeDeploymentConfig
 } from '@safe-global/protocol-kit';
 import hre from "hardhat";
-import { WalletClient, PublicClient, zeroAddress, parseEther, encodeFunctionData, decodeEventLog, getContract, toHex, concat, keccak256 } from "viem";
-import { hardhat } from "viem/chains";
-import { privateKeyToAccount } from "viem/accounts";
+import { WalletClient, PublicClient, zeroAddress, parseEther, encodeFunctionData, toHex} from "viem";
 import { MetaTransactionData, OperationType } from "@safe-global/types-kit";
 
 // Safe ABI fragments we need
@@ -167,6 +164,14 @@ describe("Safe with Guard", function () {
         // Get deployer account
         accounts = await hre.viem.getWalletClients();
         publicClient = await hre.viem.getPublicClient();
+
+        // Configure for consistent gas estimation
+        const originalEstimateGas = publicClient.estimateGas;
+        publicClient.estimateGas = async (args: any) => {
+            // Use a cached/fixed value for gas estimation
+            return BigInt("0x1000000");
+        };
+
         namedAccounts = await hre.getNamedAccounts();
         walletClient = accounts[0];
         usersWalletClient = accounts[1];
@@ -219,7 +224,7 @@ describe("Safe with Guard", function () {
             value: parseEther(deploymentTransaction.value),
             data: deploymentTransaction.data as `0x${string}`,
         });
-        
+
         const transactionReceipt = await publicClient.waitForTransactionReceipt({
             hash: transactionHash
         });
@@ -241,39 +246,40 @@ describe("Safe with Guard", function () {
         easyGuardAddress = EasyGuardDeployment.address as `0x${string}`;
 
         console.log("EasyGuard deployed at:", easyGuardAddress);
-    });
 
-    it("Should deploy a Safe, enable guard, and execute transactions", async function () {
-        expect(await safe.isSafeDeployed()).to.be.true;
-
-        // 2. Fund the safe
-        await walletClient.sendTransaction({
-            to: safeAddress,
-            value: BigInt(1_000_000_000_000_000_000),
-        });
-
-        
         // Verify Safe is set up correctly
         const owners = await safe.getOwners();
         const threshold = await safe.getThreshold();
         expect(owners[0].toLowerCase()).to.equal(namedAccounts.users.toLowerCase());
         expect(threshold).to.equal(1);
 
+    });
+
+    it("Should Enable guard, and execute transactions", async function () {
+        expect(await safe.isSafeDeployed()).to.be.true;
+
+        // 2. Fund the safe
+        await walletClient.sendTransaction({
+            to: safeAddress,
+            value: parseEther("1.0"),
+        });
+
+
         // 3. Enable guard with empty program
 
         // Empty program bytecode (just returns true)
-        const emptyProgram = "0x60806040526000805460ff1916905534801561001a57600080fd5b5061027d806100296000396000f3fe608060405234801561001057600080fd5b506004361061002b5760003560e01c806384b0196e14610030575b600080fd5b61004361003e3660046101a8565b610055565b604051901515815260200160405180910390f35b60008054610100900460ff16156100755750600054610100900460ff1690506101a3565b60008054610100900460ff16158015610094575060005460ff166001145b156100a3576001600160ff19565b8281148015906100b35750600084115b156100c8576001600160ff1916176000555b6001805460208501356000146100e557828551101561010557610105565b6040516000906100f59061017c565b9081526020016040518091039020541461010557610105565b506001600160ff19161790556001805460408501356000146101505782835110156101345750505050600161010090046001600160ff1916178155919050565b600061014082860161021c565b5161014a91906101fc565b1415610170575050506001610100900460ff16600160ff19161790555b50506001610100900460ff1616156101905750600054610100900460ff165b50506001610100900460ff161690505b92915050565b6000806000606084860312156101bd57600080fd5b833567ffffffffffffffff8111156101d457600080fd5b6101e086828701610248565b9660208601359650604086013596939550919350505050565b602080825281016001600160a01b03841681835280604085015280856060860137600060608385010152600060608285010152600060608185015250601f909101601f19168301905092915050565b60006060828403121561022e57600080fd5b50919050565b634e487b7160e01b600052604160045260246000fd5b600080600060608486031215610245600084fd5b833567ffffffffffffffff81111561025d57600080fd5b84016060818703121561026f57600080fd5b94935050505056";
+        const trueProgram = "0x600880805f395ff360205f80158152f3";
 
         // Enable guard via delegate call
         const enableGuardData = encodeFunctionData({
             abi: GUARD_ABI,
             functionName: 'enableGuard',
-            args: [easyGuardAddress, emptyProgram, false]
+            args: [easyGuardAddress, trueProgram, false]
         });
 
-        const transactions: MetaTransactionData[] = [
+        let transactions: MetaTransactionData[] = [
             {
-                to: safeAddress,
+                to: easyGuardAddress,
                 data: enableGuardData,
                 value: "0x0",
                 operation: OperationType.DelegateCall,
@@ -282,75 +288,111 @@ describe("Safe with Guard", function () {
 
         let safeTransaction = await safe.createTransaction({ transactions });
         safeTransaction = await safe.signTransaction(safeTransaction);
-        const txResponse = await safe.executeTransaction(safeTransaction);
+        let txResponse = await safe.executeTransaction(safeTransaction);
         await txResponse.transactionResponse?.wait();
 
         // Check that guard is properly set
         const guardAddress = await safe.getGuard();
         expect(guardAddress.toLowerCase()).to.equal(easyGuardAddress.toLowerCase());
 
-        // // 4. Execute a test transaction through the Safe
-        // const transferAmount = parseEther("0.1");
+        const easyGuard = await hre.viem.getContractAt(
+            "EasyGuard",
+            easyGuardAddress);
 
-        // // Create transaction to transfer ETH to the deployer
-        // const transferNonce = await safe.read.nonce();
+        let checkerProgramAddress = await easyGuard.read.getCheckerProgram([safeAddress]);
+        console.log("checker program address: ", checkerProgramAddress);
 
-        // // Get transaction hash
-        // const transferTxHash = await safe.read.getTransactionHash([
-        //     namedAccounts.deployer, // to
-        //     transferAmount, // value
-        //     "0x", // data
-        //     0n, // operation (0 = Call)
-        //     0n, // safeTxGas
-        //     0n, // baseGas
-        //     0n, // gasPrice
-        //     "0x0000000000000000000000000000000000000000", // gasToken
-        //     "0x0000000000000000000000000000000000000000", // refundReceiver
-        //     transferNonce // nonce
-        // ]);
+        let checkerProgram = await publicClient.getCode({address: checkerProgramAddress});
+        console.log("checker program: ", checkerProgram);
 
-        // // Sign the transaction
-        // const transferSignature = await walletClient.signMessage({
-        //     message: { raw: transferTxHash },
-        //     account: namedAccounts.users as `0x${string}`,
-        // });
+        expect(checkerProgram.substring(2)).to.be.equal(trueProgram.substring(18));
 
-        // // Format the signature as expected by Safe (address + signature)
-        // // Get the r, s, v values from the signature
-        // const transferR = transferSignature.slice(0, 66);
-        // const transferS = '0x' + transferSignature.slice(66, 130);
-        // const transferV = parseInt(transferSignature.slice(130, 132), 16);
-        
-        // // Convert to Safe's signature format (65 bytes)
-        // const transferAdjustedV = (transferV + 4).toString(16).padStart(2, '0'); // Add 4 to v as per Safe docs
-        // const transferAdjustedSignature = transferR + transferS.slice(2) + transferAdjustedV;
 
-        // // Execute the transfer transaction
-        // const transferExecTx = await safe.write.execTransaction([
-        //     namedAccounts.deployer, // to
-        //     transferAmount, // value
-        //     "0x", // data
-        //     0n, // operation (0 = Call)
-        //     0n, // safeTxGas
-        //     0n, // baseGas
-        //     0n, // gasPrice
-        //     "0x0000000000000000000000000000000000000000", // gasToken
-        //     "0x0000000000000000000000000000000000000000", // refundReceiver
-        //     transferAdjustedSignature // signatures
-        // ]);
+        // 4. Execute a test transaction through the Safe
+        const transferAmount = parseEther("0.1");
 
-        // await publicClient.waitForTransactionReceipt({ hash: transferExecTx });
-        // console.log("Test transaction executed successfully");
+        transactions = [
+            {
+                to: walletClient.account.address,
+                data: "0x",
+                value: toHex(transferAmount),
+            },
+        ];
+        safeTransaction = await safe.createTransaction({ transactions });
+        safeTransaction = await safe.signTransaction(safeTransaction);
+        txResponse = await safe.executeTransaction(safeTransaction);
+        await txResponse.transactionResponse?.wait();
 
-        // // Verify transaction executed correctly by checking the safe's balance
-        // const safeBalance = await publicClient.getBalance({
-        //     address: safeAddress,
-        // });
 
-        // console.log("Safe balance after transfer:", safeBalance);
+        // Verify transaction executed correctly by checking the safe's balance
+        const safeBalance = await publicClient.getBalance({
+            address: safeAddress,
+        });
 
-        // // Expect that balance reduced by transfer amount plus gas
-        // expect(safeBalance < parseEther("0.9")).to.be.true;
-        // expect(safeBalance > parseEther("0.8")).to.be.true;
+        // Expect that balance reduced by transfer amount
+        expect(safeBalance == parseEther("0.9")).to.be.true;
+    });
+
+    it("Should Enable false guard, and fail to execute transactions", async function () {
+        expect(await safe.isSafeDeployed()).to.be.true;
+
+        // 3. Enable guard with empty program
+
+        // Empty program bytecode (just returns true)
+        const falseProgram = "0x600880805f395ff360205f808052f300";
+
+        // Enable guard via delegate call
+        const enableGuardData = encodeFunctionData({
+            abi: GUARD_ABI,
+            functionName: 'enableGuard',
+            args: [easyGuardAddress, falseProgram, false]
+        });
+
+        let transactions: MetaTransactionData[] = [
+            {
+                to: easyGuardAddress,
+                data: enableGuardData,
+                value: "0x0",
+                operation: OperationType.DelegateCall,
+            },
+        ];
+
+        let safeTransaction = await safe.createTransaction({ transactions });
+        safeTransaction = await safe.signTransaction(safeTransaction);
+        let txResponse = await safe.executeTransaction(safeTransaction);
+        await txResponse.transactionResponse?.wait();
+
+        // Check that guard is properly set
+        const guardAddress = await safe.getGuard();
+        expect(guardAddress.toLowerCase()).to.equal(easyGuardAddress.toLowerCase());
+
+        const easyGuard = await hre.viem.getContractAt(
+            "EasyGuard",
+            easyGuardAddress);
+
+        let checkerProgramAddress = await easyGuard.read.getCheckerProgram([safeAddress]);
+        console.log("checker program address: ", checkerProgramAddress);
+
+        let checkerProgram = await publicClient.getCode({address: checkerProgramAddress});
+        console.log("checker program: ", checkerProgram);
+
+        expect(checkerProgram.substring(2)).to.be.equal(falseProgram.substring(18));
+
+
+        // 4. Execute a test transaction through the Safe
+        const transferAmount = parseEther("0.1");
+
+        transactions = [
+            {
+                to: walletClient.account.address,
+                data: "0x",
+                value: toHex(transferAmount),
+            },
+        ];
+        safeTransaction = await safe.createTransaction({ transactions });
+        safeTransaction = await safe.signTransaction(safeTransaction);
+        await expect(
+            safe.executeTransaction(safeTransaction)
+        ).to.be.rejectedWith("Guard: Transaction verification failed");
     });
 });
