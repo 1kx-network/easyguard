@@ -25,10 +25,10 @@ interface GuardProgramVerification {
         address msgSender;
     }
 
-    function verify(TransactionContext calldata context, address[] calldata owners, address[] calldata signers) external returns (bool);
+    function verify(TransactionContext calldata context, address[] calldata owners, address[] calldata signers) external view returns (bool);
 }
 
-    /**
+/**
  * @title Easy Guard
  * @notice This contract is a transaction guard for Safe ^1.3.0
  */
@@ -44,7 +44,7 @@ contract EasyGuard is
 
     constructor() {
         // Initialize opcode table
-        // Format: (allowed << 4) | (produced << 2) | consumed
+        // Format: (allowed << 4) | (consumed << 2) | produced
 
         // Stop and arithmetic operations
         opcodeTable[0x00] = 0x10; // STOP: 0/0
@@ -108,8 +108,8 @@ contract EasyGuard is
         opcodeTable[0x59] = 0x14; // MSIZE: 0/1
         opcodeTable[0x5B] = 0x10; // JUMPDEST: 0/0
 
-        // Push operations (0x60-0x7F)
-        for (uint8 i = 0x60; i <= 0x7F; i++) {
+        // Push operations (0x5F-0x7F)
+        for (uint8 i = 0x5F; i <= 0x7F; i++) {
             opcodeTable[i] = 0x14; // PUSH1-PUSH32: 0/1
         }
 
@@ -127,6 +127,8 @@ contract EasyGuard is
         // Calls are not allowed
         // TODO: we may allow STATICCALL to a whitelist of contracts and methods.
 
+        // RETURN is allowed
+        opcodeTable[0xF3] = 0x15; // RETURN: 2/0
         // System operations: REVERT is allowed
         opcodeTable[0xFD] = 0x15; // REVERT: 2/0
     }
@@ -297,7 +299,7 @@ contract EasyGuard is
                 packed := sload(add(opcodeTable.slot, i))
             }
             for (uint256 j = 0; j < 32 && i * 32 + j < 256; j++) {
-                opcodeTableMem[i * 32 + j] = uint8(uint256(packed >> (248 - j * 8)) & 0xFF);
+                opcodeTableMem[i * 32 + j] = uint8(uint256(packed >> (j * 8)) & 0xFF);
             }
         }
 
@@ -325,7 +327,7 @@ contract EasyGuard is
 
                 // If it is an invalid
                 if ((info & VALID_OPCODE) == 0) {
-                    console.log("Disallowed or invalid opcode");
+                    console.log("Disallowed or invalid opcode: ", info);
                     return false;
                 }
 
@@ -510,17 +512,30 @@ contract EasyGuard is
         // Get the list of owners from the safe
         owners = context.safe.getOwners();
 
-        // Call the program as staticcall and revert if verification fails
-        (bool success, bytes memory returnData) = address(program).staticcall(
-            abi.encodeWithSelector(
+        bool result;
+        bytes memory inputData = abi.encodeWithSelector(
                 GuardProgramVerification.verify.selector,  // will be ignored
                 context,
                 owners,
                 signers
-            )
         );
 
-        require(success && abi.decode(returnData, (bool)), "Guard: Transaction verification failed");
+        assembly {
+            let ptr := mload(0x40) // get free memory pointer
+            let success := staticcall(gas(), program, add(inputData, 32), mload(inputData), ptr, 32)
+
+             switch success
+                case 0 {
+                     revert(0, 0) // or handle failure differently
+                }
+                case 1 {
+                     // Load 32 bytes of return data into result
+                     result := iszero(iszero(mload(ptr)))
+                }
+        }
+
+        // Call the program as staticcall and revert if verification fails
+        require(result, "Guard: Transaction verification failed");
     }
 
     function checkAfterExecution(bytes32 txHash, bool success) external {
