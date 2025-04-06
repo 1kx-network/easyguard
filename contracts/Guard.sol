@@ -146,23 +146,31 @@ contract EasyGuard is
         uint16 length = uint16(newChecker.length);
         /**
           The bytecode below means the following (length will be replaced at checker construction).
-          PUSH2 <LENGTH>
-          DUP1
-          PUSH1 11
-          PUSH0
-          CODECOPY
-          PUSH0
-          SWAP1
-          RETURN
-
           It just returns the code immediately following it.
+
+          PUSH2 <LENGTH>  // 0x61 <length> Length newChecker    | stack = [length]
+          DUP1            // 0x80 Duplicate length.             | stack = [length, length]
+          PUSH1 10        // 0x600a  Push 10
+                          //         (length of this bytecode)  | stack = [10, length, length]
+          PUSH0           // 0x5f Push 0                        | stack = [0, 10, length, length]
+          CODECOPY        // 0x39 copy code from [10:10+length]
+                          // to memory[0:length]                | stack = [length]
+          PUSH0           // 0x5f Push 0                        | stack = [0, length]
+          RETURN          // 0xf3 returns memory[0:length]      | stack = []
+
         */
         // Deploy the new contract using CREATE
         address contractAddress;
         assembly {
             // Get the free memory pointer
             let ptr := mload(0x40)
+            // Below we have the above bytecode as a single 256-bit constant, to be copied to
+            // memory in one mstore instruction. The bytecode is 10 bytes, they need to be
+            // the most significant bytes, to be put into beginning of memory in big-endian.
+            // Therefore we need to shift it left by 256 - (10 * 8) = 176 bits.
             mstore(ptr, shl(176, 0x61000080600a5f395ff3))
+            // Store the length (which fits into two bytes in any case) into those two bytes
+            // arguments of the first PUSH2 bytecode instruction.
             mstore8(add(ptr, 1), shr(8, length))
             mstore8(add(ptr, 2), length)
             // Copy the bytecode to memory
