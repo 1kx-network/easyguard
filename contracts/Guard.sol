@@ -168,7 +168,7 @@ contract EasyGuard is
             // memory in one mstore instruction. The bytecode is 10 bytes, they need to be
             // the most significant bytes, to be put into beginning of memory in big-endian.
             // Therefore we need to shift it left by 256 - (10 * 8) = 176 bits.
-            mstore(ptr, shl(176, 0x61000080600a5f395ff3))
+            mstore(ptr, shl(176, 0x61000080600a5f395ff3))   // the constructor bytecode described above.
             // Store the length (which fits into two bytes in any case) into those two bytes
             // arguments of the first PUSH2 bytecode instruction.
             mstore8(add(ptr, 1), shr(8, length))
