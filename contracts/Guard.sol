@@ -346,9 +346,13 @@ contract EasyGuard is
             StackEntry[] memory stack = context.stack;
 
             while (pc < code.length) {
+                if (visited[pc / 256] & (1 << pc % 256) != 0) {
+                    console.log("Control graph is not a DAG, loops are not allowed");
+                    return false;
+                }
+                visited[pc / 256] |= (1 << (pc % 256));
                 uint8 opcode = uint8(code[pc]);
                 uint8 info = opcodeTableMem[opcode];
-                visited[pc / 256] |= (1 << (pc % 256));
 
                 // If it is an invalid
                 if ((info & VALID_OPCODE) == 0) {
@@ -384,10 +388,6 @@ contract EasyGuard is
                     if (target.value >= code.length) return false;
                     if (uint8(code[target.value]) != 0x5B) return false; // JUMPDEST
 
-                    // Continue with jump path if it is not yet visited
-                    if ((visited[target.value / 256] & (1 << (target.value % 256))) != 0) {
-                        break;
-                    }
                     pc = target.value;
                     continue;
                 }
@@ -408,15 +408,11 @@ contract EasyGuard is
                     // Add fallthrough path to queue
                     if (queueEnd < contextQueue.length) {
                         uint256 new_pc = pc + 1;
-                        if ((visited[new_pc / 256] & (1 << (new_pc % 256))) == 0) {
-                            contextQueue[queueEnd] = ExecutionContext(new_pc, stack);
-                            queueEnd++;
-                        }
-                    }
-
-                    // Continue with jump path if it is not yet visited
-                    if ((visited[target.value / 256] & (1 << (target.value % 256))) != 0) {
-                        break;
+                        contextQueue[queueEnd] = ExecutionContext(new_pc, stack);
+                        queueEnd++;
+                    } else {
+                        console.log("Control graph too complicated, can't analyze the program");
+                        return false;
                     }
                     pc = target.value;
                     continue;
