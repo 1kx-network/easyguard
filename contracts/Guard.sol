@@ -533,7 +533,6 @@ contract EasyGuard is
         // Get the list of owners from the safe
         owners = context.safe.getOwners();
 
-        bool result;
         bytes memory inputData = abi.encodeWithSelector(
                 GuardProgramVerification.verify.selector,  // will be ignored
                 context,
@@ -541,22 +540,11 @@ contract EasyGuard is
                 signers
         );
 
-        assembly {
-            let ptr := mload(0x40) // get free memory pointer
-            let success := staticcall(gas(), program, add(inputData, 32), mload(inputData), ptr, 32)
-
-             switch success
-                case 0 {
-                     revert(0, 0) // or handle failure differently
-                }
-                case 1 {
-                     // Load 32 bytes of return data into result
-                     result := iszero(iszero(mload(ptr)))
-                }
-        }
+        (bool success, bytes memory returnData) = address(program).staticcall(inputData);
+        bool result = abi.decode(returnData, (bool));
 
         // Call the program as staticcall and revert if verification fails
-        require(result, "Guard: Transaction verification failed");
+        require(success && result, "Guard: Transaction verification failed");
     }
 
     function checkAfterExecution(bytes32 txHash, bool success) external {
