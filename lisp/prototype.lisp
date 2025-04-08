@@ -47,6 +47,10 @@
   (setf (aref *opcode-table* #x17) '(t 2 1)) ; OR
   (setf (aref *opcode-table* #x18) '(t 2 1)) ; XOR
   (setf (aref *opcode-table* #x19) '(t 1 1)) ; NOT
+  (setf (aref *opcode-table* #x1A) '(t 2 1)) ; BYTE
+  (setf (aref *opcode-table* #x1B) '(t 2 1)) ; SHL
+  (setf (aref *opcode-table* #x1C) '(t 2 1)) ; SHR
+  (setf (aref *opcode-table* #x1D) '(t 2 1)) ; SAR
 
   ;; SHA3
   (setf (aref *opcode-table* #x20) '(t 2 1)) ; SHA3
@@ -127,102 +131,117 @@
 
 (defparameter *visited-limit* 1024 "Max codewalk depth limit")
 
-(defun dfs-walk-code (code pc visited stack)
-  (when (> (length visited) 1024) ; Basic cycle/depth limit
-        (error "DFS depth or cycle limit exceeded at PC ~X" pc))
-  (assert (< pc (length code)) () "PC ~X out of bounds (~A)" pc (length code))
-  (assert (not (member pc visited :test #'=)) () "Cycle detected at PC ~X"pc)
-  
-  (let* ((opcode (aref code pc)))
-    (destructuring-bind (allowed consumed produced)
-        (aref *opcode-table* opcode)
-      (assert allowed () "opcode ~X at PC ~A not allowed" opcode pc)
-      (assert (>= (length stack) consumed) () "stack underflow at PC ~A (Opcode ~X): need ~A, have ~A"
-              pc opcode consumed (length stack))
+(defvar *trace* nil
+  "Trace of a code walk")
 
-      ;; Calculate potential new stack size *before* overflow check.
-      (let ((new-stack-size (+ (- (length stack) consumed) produced)))
-           (assert (<= new-stack-size *max-stack-size*) () "Stack overflow at PC ~X (Opcode ~X): size would be ~A"
-                   pc opcode new-stack-size))
-
-      (let ((next-pc (+ pc 1)) ; Default next PC
-            (next-visited (cons pc visited)))
+(defun check-code (code)
+  "Walk the code and return the list of all visited PCs with opcodes in the order they were visited,
+  along with the result of whether the code is allowed"
               
-        (cond
-          ;; -- PUSH --
-          ((<= #x5F opcode #x7F)
-             (let* ((push-bytes (- opcode #x5F))
-                    (value 0))
-               ;; Check if push reads past end of code
-               (assert (<= (+ pc 1 push-bytes) (length code)) () "PUSH reads past end of code at PC ~X" pc)
-                
-               (loop for i from 1 to push-bytes
-                     do (setf value (logior (ash value 8) (aref code (+ pc i)))))
-
-               (setf next-pc (+ pc 1 push-bytes))
+  (let ((*trace* nil))
+    (labels ((dfs-walk-code (code pc visited stack)
+               (when (> (length visited) 1024) ; Basic cycle/depth limit
+                 (error "DFS depth or cycle limit exceeded at PC ~X" pc))
+               (assert (< pc (length code)) () "PC ~X out of bounds (~A)" pc (length code))
+               (assert (not (member pc visited :test #'=)) () "Cycle detected at PC ~X"pc)
                
-               (dfs-walk-code code
-                              next-pc
-                              next-visited
-                              (cons `(:constant ,value) stack))))
-          ;; -- JUMP --
-          ((= opcode #x56)
-           (let ((target-spec (car stack)))
-             (assert (and (listp target-spec) (eq (first target-spec) :constant))
-                     () "JUMP target is not :constant at PC ~X" pc)
-             (let ((target-pc (second target-spec)))
-               (assert (integerp target-pc) () "JUMP target PC is not an integer at PC ~X" pc)
-               (assert (< target-pc (length code)) () "JUMP target PC ~X out of bounds at PC ~X" target-pc pc)
-               (assert (= (aref code target-pc) #x5B) () "JUMP destination ~X is not JUMPDEST (Opcode: ~X)"
-                       target-pc (aref code target-pc))
-               (dfs-walk-code code target-pc next-visited (cdr stack))))) ; Jump, pop 1
-          
-          ((= opcode #x57)
-           (let ((target-spec (car stack))
-                 (condition-spec (cadr stack))) ; Condition is second item popped
-              (declare (ignore condition-spec)) ; In static analysis, we explore both paths
-              (assert (and (listp target-spec) (eq (first target-spec) :constant))
-                      () "JUMPI target is not :constant at PC ~X" pc)
-              (let ((target-pc (second target-spec)))
-                (assert (integerp target-pc) () "JUMPI target PC is not an integer at PC ~X" pc)
-                (assert (< target-pc (length code)) () "JUMPI target PC ~X out of bounds at PC ~X" target-pc pc)
-                (assert (= (aref code target-pc) #x5B) () "JUMPI destination ~X is not JUMPDEST (Opcode: ~X)"
-                        target-pc (aref code target-pc))
-                ;; Explore both paths, pop 2 from stack for both
-                (let ((next-stack (cddr stack)))
-                    (dfs-walk-code code next-pc next-visited next-stack)     ; Fall-through path
-                    (dfs-walk-code code target-pc next-visited next-stack))))) ; Jump path
+               (let* ((opcode (aref code pc)))
+                 (setf *trace* (push (list pc opcode) *trace*))
+                 (destructuring-bind (allowed consumed produced)
+                     (aref *opcode-table* opcode)
+                   (assert allowed () "opcode ~X at PC ~A not allowed" opcode pc)
+                   (assert (>= (length stack) consumed) () "stack underflow at PC ~A (Opcode ~X): need ~A, have ~A"
+                           pc opcode consumed (length stack))
 
-          ;; --- PC ---
-          ((= opcode #x58)
-           (dfs-walk-code code next-pc next-visited (cons `(:constant ,pc) stack)))
+                   ;; Calculate potential new stack size *before* overflow check.
+                   (let ((new-stack-size (+ (- (length stack) consumed) produced)))
+                     (assert (<= new-stack-size *max-stack-size*) () "Stack overflow at PC ~X (Opcode ~X): size would be ~A"
+                             pc opcode new-stack-size))
 
-          ;; --- DUPx ---
-          ((<= #x80 opcode #x8F)
-           (let ((dup-n (- opcode #x7F))) ; 1 for DUP1, 16 for DUP16
-             (assert (>= (length stack) dup-n) () "DUP stack underflow at PC ~X" pc)
-             (let ((dup-item (nth (- dup-n 1) stack))) ; Use 0-based index
-               (dfs-walk-code code next-pc next-visited (cons dup-item stack)))))
+                   (let ((next-pc (+ pc 1)) ; Default next PC
+                         (next-visited (cons pc visited)))
+                     
+                     (cond
+                       ;; -- PUSH --
+                       ((<= #x5F opcode #x7F)
+                        (let* ((push-bytes (- opcode #x5F))
+                               (value 0))
+                          ;; Check if push reads past end of code
+                          (assert (<= (+ pc 1 push-bytes) (length code)) () "PUSH reads past end of code at PC ~X" pc)
+                          
+                          (loop for i from 1 to push-bytes
+                                do (setf value (logior (ash value 8) (aref code (+ pc i)))))
+
+                          (setf next-pc (+ pc 1 push-bytes))
+                          
+                          (dfs-walk-code code
+                                         next-pc
+                                         next-visited
+                                         (cons `(:constant ,value) stack))))
+                       ;; -- JUMP --
+                       ((= opcode #x56)
+                        (let ((target-spec (car stack)))
+                          (assert (and (listp target-spec) (eq (first target-spec) :constant))
+                                  () "JUMP target is not :constant at PC ~X" pc)
+                          (let ((target-pc (second target-spec)))
+                            (assert (integerp target-pc) () "JUMP target PC is not an integer at PC ~X" pc)
+                            (assert (< target-pc (length code)) () "JUMP target PC ~X out of bounds at PC ~X" target-pc pc)
+                            (assert (= (aref code target-pc) #x5B) () "JUMP destination ~X is not JUMPDEST (Opcode: ~X)"
+                                    target-pc (aref code target-pc))
+                            (dfs-walk-code code target-pc next-visited (cdr stack))))) ; Jump, pop 1
+                       
+                       ((= opcode #x57)
+                        (let ((target-spec (car stack))
+                              (condition-spec (cadr stack))) ; Condition is second item popped
+                          (declare (ignore condition-spec)) ; In static analysis, we explore both paths
+                          (assert (and (listp target-spec) (eq (first target-spec) :constant))
+                                  () "JUMPI target is not :constant at PC ~X" pc)
+                          (let ((target-pc (second target-spec)))
+                            (assert (integerp target-pc) () "JUMPI target PC is not an integer at PC ~X" pc)
+                            (assert (< target-pc (length code)) () "JUMPI target PC ~X out of bounds at PC ~X" target-pc pc)
+                            (assert (= (aref code target-pc) #x5B) () "JUMPI destination ~X is not JUMPDEST (Opcode: ~X)"
+                                    target-pc (aref code target-pc))
+                            ;; Explore both paths, pop 2 from stack for both
+                            (let ((next-stack (cddr stack)))
+                              (dfs-walk-code code next-pc next-visited next-stack)     ; Fall-through path
+                              (dfs-walk-code code target-pc next-visited next-stack))))) ; Jump path
+
+                       ;; --- PC ---
+                       ((= opcode #x58)
+                        (dfs-walk-code code next-pc next-visited (cons `(:constant ,pc) stack)))
+
+                       ;; --- DUPx ---
+                       ((<= #x80 opcode #x8F)
+                        (let ((dup-n (- opcode #x7F))) ; 1 for DUP1, 16 for DUP16
+                          (assert (>= (length stack) dup-n) () "DUP stack underflow at PC ~X" pc)
+                          (let ((dup-item (nth (- dup-n 1) stack))) ; Use 0-based index
+                            (dfs-walk-code code next-pc next-visited (cons dup-item stack)))))
 
 
-          ;; --- SWAPx ---
-          ((<= #x90 opcode #x9F)
-           (let ((swap-n (- opcode #x8F))) ; 1 for SWAP1, 16 for SWAP16
-             (assert (>= (length stack) (+ swap-n 1)) () "SWAP stack underflow at PC ~X" pc) ; Need N+1 items
-             (dfs-walk-code code next-pc next-visited (swap-stack stack swap-n))))
-          
+                       ;; --- SWAPx ---
+                       ((<= #x90 opcode #x9F)
+                        (let ((swap-n (- opcode #x8F))) ; 1 for SWAP1, 16 for SWAP16
+                          (assert (>= (length stack) (+ swap-n 1)) () "SWAP stack underflow at PC ~X" pc) ; Need N+1 items
+                          (dfs-walk-code code next-pc next-visited (swap-stack stack swap-n))))
+                       
 
-          ;; --- Default Case (Arithmetic, Logic, Memory, etc.) ---
-          (t
-           (let* ((remaining-stack (nthcdr consumed stack))
-                  ;; Using :unknown as placeholder, adjust if needed
-                  (produced-items (loop repeat produced collect :unknown))
-                  (new-stack (append produced-items remaining-stack)))
-               ;; Check for STOP, RETURN, REVERT, INVALID etc. to terminate path if needed
-               (if (member opcode '(#x00 #xF3 #xFD)) ; STOP, RETURN, REVERT
-                   (progn
-                      ;; Path finished, maybe return stack state or t
-                      (format t "~&Path terminated at PC ~X with Opcode ~X~%" pc opcode)
-                      t)
-                   ;; Continue walking for other opcodes
-                   (dfs-walk-code code next-pc next-visited new-stack)))))))))
+                       ;; --- Default Case (Arithmetic, Logic, Memory, etc.) ---
+                       (t
+                        (let* ((remaining-stack (nthcdr consumed stack))
+                               ;; Using :unknown as placeholder, adjust if needed
+                               (produced-items (loop repeat produced collect :unknown))
+                               (new-stack (append produced-items remaining-stack)))
+                          ;; Check for STOP, RETURN, REVERT, INVALID etc. to terminate path if needed
+                          (if (member opcode '(#x00 #xF3 #xFD)) ; STOP, RETURN, REVERT
+                              (progn
+                                ;; Path finished, maybe return stack state or t
+                                (format t "~&Path terminated at PC ~X with Opcode ~X~%" pc opcode)
+                                t)
+                              ;; Continue walking for other opcodes
+                              (dfs-walk-code code next-pc next-visited new-stack))))))))))
+      (handler-case 
+          (progn (dfs-walk-code code 0 nil nil)
+                 (values t *trace*))
+        (error (what)
+          (values nil (format nil "~a" what) *trace*)))
+)))
