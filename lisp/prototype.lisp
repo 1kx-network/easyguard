@@ -241,7 +241,7 @@
                               (dfs-walk-code code next-pc next-visited new-stack))))))))))
       (handler-case 
           (progn (dfs-walk-code code 0 nil nil)
-                 (values t *trace*))
+                 (values t (reverse *trace*)))
         (error (what)
-          (values nil (format nil "~a" what) *trace*)))
+          (values nil (format nil "~a" what) (reverse *trace*))))
 )))
