@@ -36,12 +36,194 @@ contract EasyGuard is
     BaseGuard,
     SignatureDecoder
 {
+    // =========================================================================
+    // Errors
+    // =========================================================================
+    error PcOutOfBounds(uint256 pc, uint256 codeLength);
+    error IterationLimitExceeded(uint256 limit);
+    error OpcodeNotAllowed(uint8 opcode, uint256 pc);
+    error StackUnderflow(uint8 opcode, uint256 pc, uint256 stackDepth, uint8 required);
+    error StackOverflow(uint8 opcode, uint256 pc, uint256 newStackDepth, uint256 limit);
+    error PushOutOfBounds(uint256 pc, uint256 pushEnd, uint256 codeLength);
+    error InvalidJumpDestination(uint256 targetPc, uint256 pc); // Target PC is not a JUMPDEST opcode
+    error JumpTargetOutOfBounds(uint256 targetPc, uint256 pc, uint256 codeLength);
+    error JumpToNonConstantAddress(uint256 pc);
+    error CycleDetected(uint256 pc);
+    error PcExceedsUint16Limit(uint256 pc);
+    error InvalidOpcodeInfoPacking(uint8 opcode, uint8 value, string reason); // For constructor checks
+    error DupStackDepthError(uint8 n, uint256 pc, uint256 stackDepth); // Specific error for DUP
+    error SwapStackDepthError(uint8 n, uint256 pc, uint256 stackDepth); // Specific error for SWAP
+
     mapping(Safe => address) private checkerProgram;
     mapping(Safe => bool) private disableLockoutCheck;
-    uint8[256] private opcodeTable;
 
-    uint8 constant VALID_OPCODE = 0x10;  // Bit mask for valid opcodes in opcodeTable
+    // Bitmask: 1 = allowed, 0 = disallowed. Bit N corresponds to opcode N.
+    uint256 immutable public allowedBitmask;
 
+    // Packed Consumed/Produced: 4 bits per opcode [CCC|P] (Consumed 0-7 removed | Produced 0-1 added)
+    // Stored across 4 uint256 words (4 * 256 bits / 4 bits/opcode = 256 opcodes)
+    uint256 immutable public packedConsumedProduced0;
+    uint256 immutable public packedConsumedProduced1;
+    uint256 immutable public packedConsumedProduced2;
+    uint256 immutable public packedConsumedProduced3;
+
+    // =========================================================================
+    // Constants
+    // =========================================================================
+    uint256 public constant MAX_STACK_SIZE = 1024;
+    uint256 public constant MAX_ITERATIONS = 10000; // Adjust as needed
+
+    // =========================================================================
+    // Structs
+    // =========================================================================
+    // State for the iterative DFS control stack
+    struct State {
+        uint256 pc;
+        uint256[] stack;
+        uint16[] visited; // Tracks PCs (as uint16) visited on the path
+    }
+
+    // Helper struct for defining rules before packing
+    struct TempOpInfo {
+        bool allowed;
+        uint8 consumed; // Items REMOVED
+        uint8 produced; // Items ADDED
+        // Optional: Required stack depth if different from consumed (for DUP/SWAP)
+        // We don't store this optional field, it's handled by bespoke checks later
+    }
+
+    constructor() {
+        // Build the immutable rule tables in memory first
+        uint256 buildAllowedBitmask = 0;
+        uint256[4] memory buildPackedConsumedProduced; // Zero-initialized
+
+        // Define rules for all 256 opcodes
+        // This is verbose but necessary for immutable setup
+        TempOpInfo[256] memory rules;
+
+        // Stop and arithmetic operations
+        rules[0x00] = TempOpInfo(true, 0, 0); // STOP
+        rules[0x01] = TempOpInfo(true, 2, 1); // ADD
+        rules[0x02] = TempOpInfo(true, 2, 1); // MUL
+        rules[0x03] = TempOpInfo(true, 2, 1); // SUB
+        rules[0x04] = TempOpInfo(true, 2, 1); // DIV
+        rules[0x05] = TempOpInfo(true, 2, 1); // SDIV
+        rules[0x06] = TempOpInfo(true, 2, 1); // MOD
+        rules[0x07] = TempOpInfo(true, 2, 1); // SMOD
+        rules[0x08] = TempOpInfo(true, 3, 1); // ADDMOD
+        rules[0x09] = TempOpInfo(true, 3, 1); // MULMOD
+        rules[0x0A] = TempOpInfo(true, 2, 1); // EXP
+
+        // Comparison & bitwise logic operations
+        rules[0x10] = TempOpInfo(true, 2, 1); // LT
+        rules[0x11] = TempOpInfo(true, 2, 1); // GT
+        rules[0x12] = TempOpInfo(true, 2, 1); // SLT
+        rules[0x13] = TempOpInfo(true, 2, 1); // SGT
+        rules[0x14] = TempOpInfo(true, 2, 1); // EQ
+        rules[0x15] = TempOpInfo(true, 1, 1); // ISZERO
+        rules[0x16] = TempOpInfo(true, 2, 1); // AND
+        rules[0x17] = TempOpInfo(true, 2, 1); // OR
+        rules[0x18] = TempOpInfo(true, 2, 1); // XOR
+        rules[0x19] = TempOpInfo(true, 1, 1); // NOT
+        rules[0x1A] = TempOpInfo(true, 2, 1); // BYTE
+        rules[0x1B] = TempOpInfo(true, 2, 1); // SHL
+        rules[0x1C] = TempOpInfo(true, 2, 1); // SHR
+        rules[0x1D] = TempOpInfo(true, 2, 1); // SAR
+
+        // SHA3
+        rules[0x20] = TempOpInfo(true, 2, 1); // SHA3
+
+        // Environmental Information
+        rules[0x30] = TempOpInfo(true, 0, 1); // ADDRESS
+        rules[0x31] = TempOpInfo(true, 1, 1); // BALANCE
+        rules[0x32] = TempOpInfo(true, 0, 1); // ORIGIN
+        rules[0x33] = TempOpInfo(true, 0, 1); // CALLER
+        rules[0x34] = TempOpInfo(true, 0, 1); // CALLVALUE
+        rules[0x35] = TempOpInfo(true, 1, 1); // CALLDATALOAD
+        rules[0x36] = TempOpInfo(true, 0, 1); // CALLDATASIZE
+        rules[0x37] = TempOpInfo(true, 3, 0); // CALLDATACOPY
+        rules[0x38] = TempOpInfo(true, 0, 1); // CODESIZE
+        rules[0x39] = TempOpInfo(true, 3, 0); // CODECOPY
+        rules[0x3A] = TempOpInfo(true, 0, 1); // GASPRICE
+
+        // Block Information
+        rules[0x40] = TempOpInfo(true, 1, 1); // BLOCKHASH
+        rules[0x41] = TempOpInfo(true, 0, 1); // COINBASE
+        rules[0x42] = TempOpInfo(true, 0, 1); // TIMESTAMP
+        rules[0x43] = TempOpInfo(true, 0, 1); // NUMBER
+        rules[0x44] = TempOpInfo(true, 0, 1); // DIFFICULTY/PREVRANDAO
+        rules[0x45] = TempOpInfo(true, 0, 1); // GASLIMIT
+        rules[0x46] = TempOpInfo(true, 0, 1); // CHAINID
+        rules[0x47] = TempOpInfo(true, 0, 1); // SELFBALANCE
+
+        // Stack, Memory, Storage and Flow Operations
+        rules[0x50] = TempOpInfo(true, 1, 0); // POP
+        rules[0x51] = TempOpInfo(true, 1, 1); // MLOAD
+        rules[0x52] = TempOpInfo(true, 2, 0); // MSTORE
+        rules[0x53] = TempOpInfo(true, 2, 0); // MSTORE8
+        rules[0x54] = TempOpInfo(true, 1, 1); // SLOAD
+        rules[0x55] = TempOpInfo(true, 2, 0); // SSTORE
+        rules[0x56] = TempOpInfo(true, 1, 0); // JUMP
+        rules[0x57] = TempOpInfo(true, 2, 0); // JUMPI
+        rules[0x58] = TempOpInfo(true, 0, 1); // PC
+        rules[0x59] = TempOpInfo(true, 0, 1); // MSIZE
+        rules[0x5A] = TempOpInfo(true, 0, 1); // GAS
+        rules[0x5B] = TempOpInfo(true, 0, 0); // JUMPDEST
+        rules[0x5E] = TempOpInfo(true, 3, 0); // MCOPY
+
+        // Push operations (0x5F-0x7F) -> (t 0 1)
+        for (uint8 i = 0x5F; i <= 0x7F; i++) {
+            rules[i] = TempOpInfo(true, 0, 1); // PUSH0-PUSH32
+        }
+
+        // Duplication operations (0x80-0x8F) -> (t 0 1)
+        for (uint8 i = 0x80; i <= 0x8F; i++) {
+            rules[i] = TempOpInfo(true, 0, 1); // DUP1-DUP16
+        }
+
+        // Exchange operations (0x90-0x9F) -> (t 1 1)
+        for (uint8 i = 0x90; i <= 0x9F; i++) {
+            rules[i] = TempOpInfo(true, 1, 1); // SWAP1-SWAP16 (Simplified rule)
+        }
+
+        // RETURN is allowed
+        rules[0xF3] = TempOpInfo(true, 2, 0); // RETURN
+        // System operations: REVERT is allowed
+        rules[0xFD] = TempOpInfo(true, 2, 0); // REVERT
+
+
+        // --- Pack the rules into the immutable variables ---
+        for (uint256 i = 0; i < 256; i++) {
+            TempOpInfo memory rule = rules[i];
+
+            // Set allowed bit
+            if (rule.allowed) {
+                buildAllowedBitmask |= (uint256(1) << i);
+            }
+
+            // Validate constraints for packing Consumed/Produced
+            // (Should have been caught by rule definitions, but double check)
+            if (rule.consumed > 7) revert InvalidOpcodeInfoPacking(uint8(i), rule.consumed, "Consumed > 7");
+            if (rule.produced > 1) revert InvalidOpcodeInfoPacking(uint8(i), rule.produced, "Produced > 1");
+
+            // Pack Consumed (CCC) and Produced (P) -> CCCP
+            uint256 packedValue = (uint256(rule.consumed) << 1) | uint256(rule.produced);
+
+            // Store packed value in the correct word and position
+            uint256 wordIndex = i / 64;
+            uint256 bitShift = (i % 64) * 4;
+            buildPackedConsumedProduced[wordIndex] |= (packedValue << bitShift);
+        }
+
+        // Assign to immutable variables
+        allowedBitmask = buildAllowedBitmask;
+        packedConsumedProduced0 = buildPackedConsumedProduced[0];
+        packedConsumedProduced1 = buildPackedConsumedProduced[1];
+        packedConsumedProduced2 = buildPackedConsumedProduced[2];
+        packedConsumedProduced3 = buildPackedConsumedProduced[3];
+    }        
+
+    /*
     constructor() {
         // Initialize opcode table
         // Format: (allowed << 4) | (consumed << 2) | produced
@@ -132,6 +314,8 @@ contract EasyGuard is
         // System operations: REVERT is allowed
         opcodeTable[0xFD] = 0x15; // REVERT: 2/0
     }
+    
+    */
 
     // solhint-disable-next-line payable-fallback
     fallback() external {}
@@ -288,182 +472,244 @@ contract EasyGuard is
         return keccak256(txHashData);
     }
 
-    struct StackEntry {
-        bool isConstant;
-        uint256 value;
+    function isInVisited(uint256 _pc, uint16[] memory _visited) internal pure returns (bool found) {
+        if (_pc > type(uint16).max)
+            revert PcExceedsUint16Limit(_pc);
+        uint16 pc16 = uint16(_pc);
+        uint256 len = _visited.length;
+        for (uint256 i = 0; i < len; i++) {
+            if (_visited[i] == pc16) return true;
+        }
+        return false;
     }
 
-    struct ExecutionContext {
-        uint256 pc;
-        StackEntry[] stack;
+    function createNextVisited(uint256 _pc, uint16[] memory _visited) internal pure returns (uint16[] memory nextVisited) {
+        if (_pc > type(uint16).max)
+            revert PcExceedsUint16Limit(_pc);
+        uint16 pc16 = uint16(_pc);
+        nextVisited = new uint16[](_visited.length + 1);
+        for (uint256 i = 0; i < _visited.length; i++) {
+            nextVisited[i] = _visited[i];
+        }
+        nextVisited[_visited.length] = pc16;
+    }
+
+    function swapStack(uint256[] memory stack, uint8 n) internal pure returns (uint256[] memory newStack) {
+        // Note: Caller must ensure stack.length >= n + 1
+        newStack = new uint256[](stack.length);
+        uint256 top = stack[0];
+        uint256 nth = stack[n];
+        newStack[0] = nth;
+        for(uint i = 1; i < n; ++i) {
+            newStack[i] = stack[i];
+        }
+        newStack[n] = top;
+        for(uint i = n + 1; i < stack.length; ++i) {
+            newStack[i] = stack[i];
+        }
+    }
+
+    // =========================================================================
+    // Bytecode Validation Logic
+    // =========================================================================
+
+    struct EvmCheckerContext {
+        State[] controlStack;
+        uint256 controlStackPtr;
+        uint256 iterationCount;
+    }
+
+    function unpackConsumedProduced(uint256 opcode) private view returns (uint8 consumed, uint8 produced) {
+        // Unpack Consumed/Produced
+        uint256 wordIndex = uint256(opcode) / 64;
+        uint256 bitShift = (uint256(opcode) % 64) * 4;
+        uint256 packedWord = (wordIndex == 0 ? packedConsumedProduced0 :
+                              wordIndex == 1 ? packedConsumedProduced1 :
+                              wordIndex == 2 ? packedConsumedProduced2 : packedConsumedProduced3);
+        uint256 packedValue = (packedWord >> bitShift) & 0xF; // Read 4 bits [CCC|P]
+        consumed = uint8((packedValue >> 1) & 7); // Unpack 3 bits (Items Removed)
+        produced = uint8(packedValue & 1);      // Unpack 1 bit (Items Added)
+    }        
+
+    function checkConsumedProduced(uint8 opcode, uint256 stack_length, uint256 pc) private view returns (uint8 consumed, uint8 produced) {
+
+        (consumed, produced) = unpackConsumedProduced(opcode);
+        // --- Stack Checks ---
+        // Generic underflow check based on items *removed*
+        if (stack_length < consumed) {
+            revert StackUnderflow(opcode, pc, stack_length, consumed);
+        }
+        
+        // Bespoke stack depth requirement checks for DUP/SWAP
+        if (opcode >= 0x80 && opcode <= 0x8F) { // DUPx
+            uint8 n = opcode - 0x80 + 1;
+            if (stack_length < n)
+                revert DupStackDepthError(n, pc, stack_length);
+        } else if (opcode >= 0x90 && opcode <= 0x9F) { // SWAPx
+            uint8 n = opcode - 0x90 + 1;
+            if (stack_length < n + 1)
+                revert SwapStackDepthError(n, pc, stack_length);
+        }
+        
+        // Overflow check based on net change
+        uint256 newStackDepth = stack_length - consumed + produced;
+        if (newStackDepth > MAX_STACK_SIZE)
+            revert StackOverflow(opcode, pc, newStackDepth, MAX_STACK_SIZE);
     }
 
     /**
-     * This function checks that the given EVM bytecode is safe to execute to
-     * evaluate a conditon.
-     *
-     *  1. It must not contain any CALL* related opcodes. It is not that those
-     *      can wreak havoc - they can't, as we'll calling them as STAICCALL.
-     *      But calling external functions means the condition depends on some
-     *      uncertain state, which is hard to reason about. Therefore we forbid
-     *      it.
-     *
-     *  2. Branching is allowed.  However, to evaluate all branches, we need to
-     *     know where the code *may* jump.  In general, it is hard to fully
-     *     determine, therefore we are making a simplifying assumption: an
-     *     address on the stack before the JUMP/JUMPI must be known during
-     *     analysis, either from PUSH*, or from PC. This will cover most
-     *     contracts, except hand crafted hackish corner cases.
+     * @notice Validates EVM bytecode using iterative DFS with cycle detection (uint16 visited path).
+     * @dev Uses packed immutable opcode rules loaded directly from bytecode. Checks rules based on [CCC|P] packing.
+     * WARNING: High gas cost due to cycle detection's memory array copying. Assumes PC fits in uint16.
+     * WARNING: Uses a simplified opcode ruleset where standard EVM rules don't fit packing constraints (e.g., LOGs).
+     * @param _code The bytecode to validate.
+     * @return valid True if the bytecode passes validation checks within limits.
      */
-    function checkEvmByteCode(bytes memory code) public view returns (bool) {
-        // Load opcode table into memory at the start
-        uint8[256] memory opcodeTableMem;
-        for (uint256 i = 0; i < 8; i += 1) {
-            bytes32 packed;
-            assembly {
-                packed := sload(add(opcodeTable.slot, i))
-            }
-            for (uint256 j = 0; j < 32 && i * 32 + j < 256; j++) {
-                opcodeTableMem[i * 32 + j] = uint8(uint256(packed >> (j * 8)) & 0xFF);
-            }
+    function checkEvmByteCode(bytes memory _code) public view returns (bool valid) {
+        if (_code.length == 0) return true;
+        if (_code.length > 24576) {
+            revert PcExceedsUint16Limit(_code.length);
         }
+        EvmCheckerContext memory ctx = EvmCheckerContext({
+            controlStack: new State[](MAX_ITERATIONS),
+                    controlStackPtr: 0,
+                    iterationCount: 0});
 
-        // A bitmap of visited opcodes.
-        uint256[] memory visited = new uint256[]((code.length + 255) / 256);
+        // --- Iterative DFS Setup ---
+        ctx.controlStack[ctx.controlStackPtr++] = State({pc: 0, stack: new uint256[](0), visited: new uint16[](0)});
 
-        // Queue of contexts to process
-        ExecutionContext[] memory contextQueue = new ExecutionContext[](16); // Fixed size for simplicity
-        uint256 queueStart = 0;
-        uint256 queueEnd = 1;
+        // --- Main DFS Loop ---
+        while (ctx.controlStackPtr > 0) {
+            if (ctx.iterationCount >= MAX_ITERATIONS)
+                revert IterationLimitExceeded(MAX_ITERATIONS);
+            ctx.iterationCount++;
 
-        // Initialize first context
-        contextQueue[0] = ExecutionContext(0, new StackEntry[](64)); // Fixed stack size
-        uint256 stackSize = 0;
+            ctx.controlStackPtr--; // Point to the element we want to process
+            State memory currentState = ctx.controlStack[ctx.controlStackPtr]; // Read the current top element
+            
+            // --- State Validation ---
+            if (currentState.pc >= _code.length)
+                continue;
+            if (isInVisited(currentState.pc, currentState.visited))
+                revert CycleDetected(currentState.pc);
 
-        while (queueStart < queueEnd) {
-            ExecutionContext memory context = contextQueue[queueStart++];
-            uint256 pc = context.pc;
-            StackEntry[] memory stack = context.stack;
+            // --- Get Opcode and Unpack Info from Immutable Vars ---
+            uint8 opcode = uint8(_code[currentState.pc]);
 
-            while (pc < code.length) {
-                if (visited[pc / 256] & (1 << pc % 256) != 0) {
-                    console.log("Control graph is not a DAG, loops are not allowed");
-                    return false;
-                }
-                visited[pc / 256] |= (1 << (pc % 256));
-                uint8 opcode = uint8(code[pc]);
-                uint8 info = opcodeTableMem[opcode];
+            // Check Allowed using bitmask
+            bool allowed = ((allowedBitmask >> uint256(opcode)) & 1) == 1;
+            if (!allowed)
+                revert OpcodeNotAllowed(opcode, currentState.pc);
 
-                // If it is an invalid
-                if ((info & VALID_OPCODE) == 0) {
-                    console.log("Disallowed or invalid opcode: ", info);
-                    return false;
-                }
+            (uint8 consumed, uint8 produced) = checkConsumedProduced(opcode, currentState.stack.length, currentState.pc);
 
-                // Handle PUSH operations (0x60 to 0x7F)
-                if (opcode >= 0x60 && opcode <= 0x7F) {
-                    uint8 pushBytes = opcode - 0x5F;
-                    uint256 value = 0;
-
-                    // Read the pushed value
-                    for (uint256 i = 0; i < pushBytes; i++) {
-                        value = (value << 8) | uint8(code[pc + 1 + i]);
-                    }
-
-                    // Push constant value to stack
-                    stack[stackSize] = StackEntry(true, value);
-                    stackSize++;
-                    pc += pushBytes;
-                }
-                // Handle JUMP
-                else if (opcode == 0x56) { // JUMP
-                    if (stackSize < 1) return false;
-                    StackEntry memory target = stack[stackSize - 1];
-                    stackSize--;
-
-                    // Only allow jumps to constant values
-                    if (!target.isConstant) return false;
-
-                    // Validate jump destination
-                    if (target.value >= code.length) return false;
-                    if (uint8(code[target.value]) != 0x5B) return false; // JUMPDEST
-
-                    pc = target.value;
-                    continue;
-                }
-                // Handle JUMPI
-                else if (opcode == 0x57) { // JUMPI
-                    if (stackSize < 2) return false;
-                    StackEntry memory target = stack[stackSize - 2];
-                    // We ignore the condition in stack[stackSize - 1], because we look at both branches
-                    stackSize -= 2;
-
-                    // Only allow jumps to constant values
-                    if (!target.isConstant) return false;
-
-                    // Validate jump destination
-                    if (target.value >= code.length) return false;
-                    if (uint8(code[target.value]) != 0x5B) return false; // JUMPDEST
-
-                    // Add fallthrough path to queue
-                    if (queueEnd < contextQueue.length) {
-                        uint256 new_pc = pc + 1;
-                        contextQueue[queueEnd] = ExecutionContext(new_pc, stack);
-                        queueEnd++;
-                    } else {
-                        console.log("Control graph too complicated, can't analyze the program");
-                        return false;
-                    }
-                    pc = target.value;
-                    continue;
-                }
-                // Handle PC
-                else if (opcode == 0x58) { // PC
-                    // Since we know the PC, it is also kind of predictable, just as PUSH* constants.
-                    stack[stackSize] = StackEntry(true, pc);
-                    stackSize++;
-                }
-                // Handle DUP operations (0x80 to 0x8F)
-                else if (opcode >= 0x80 && opcode <= 0x8F) {
-                    uint256 dupIndex = opcode - 0x7F; // DUP1 = 1, DUP2 = 2, etc.
-                    if (stackSize < dupIndex) return false;
-
-                    // Copy the stack entry, preserving its constant/value status
-                    stack[stackSize] = stack[stackSize - dupIndex];
-                    stackSize++;
-                }
-                // Handle SWAP operations (0x90 to 0x9F)
-                else if (opcode >= 0x90 && opcode <= 0x9F) {
-                    uint256 swapIndex = opcode - 0x8F; // SWAP1 = 1, SWAP2 = 2, etc.
-                    if (stackSize <= swapIndex) return false;
-
-                    // Swap the top stack item with the nth item
-                    StackEntry memory temp = stack[stackSize - 1];
-                    stack[stackSize - 1] = stack[stackSize - 1 - swapIndex];
-                    stack[stackSize - 1 - swapIndex] = temp;
-                }
-                // Handle other operations by pushing non-constant values
-                else {
-                    uint256 consumed = info & 0x03;
-                    uint256 produced = (info >> 2) & 0x03;
-
-                    if (stackSize < consumed) return false;
-                    stackSize -= consumed;
-
-                    // Push non-constant results
-                    for (uint256 i = 0; i < produced; i++) {
-                        stack[stackSize] = StackEntry(false, 0);
-                        stackSize++;
-                    }
-                }
-
-                pc++;
+            // --- Opcode Processing & State Transition ---
+            uint256 nextPc = currentState.pc + 1;
+            uint16[] memory nextVisited = createNextVisited(currentState.pc, currentState.visited);
+            uint256[] memory nextStackBase = new uint256[](currentState.stack.length - consumed);
+            for(uint i = 0; i < nextStackBase.length; ++i) {
+                nextStackBase[i] = currentState.stack[i + consumed];
             }
-        }
 
-        return true;
+            uint256 code_length = _code.length;
+
+            // Terminating Opcodes
+            if (opcode == 0x00 || opcode == 0xf3 || opcode == 0xfd || opcode == 0xfe) {
+                continue;
+            }
+            // PUSH0-PUSH32
+            else if (opcode >= 0x5F && opcode <= 0x7F) {
+                if (currentState.pc + 1 > code_length - uint256(opcode - 0x5F)) {
+                    revert PushOutOfBounds(currentState.pc, currentState.pc + 1 + uint256(opcode - 0x5F), _code.length);
+                }
+                uint256 value = 0;
+                for (uint256 i = 0; i < uint256(opcode - 0x5F); i++) {
+                    value = (value << 8) | uint8(_code[currentState.pc + 1 + i]);
+                }
+                uint256[] memory newStack = new uint256[](nextStackBase.length + produced); // produced should be 1
+                newStack[0] = value;
+                for(uint i = 0; i < nextStackBase.length; ++i) {
+                    newStack[i+produced] = nextStackBase[i];
+                }
+                if (ctx.controlStackPtr >= MAX_ITERATIONS)
+                    revert IterationLimitExceeded(MAX_ITERATIONS);
+                ctx.controlStack[ctx.controlStackPtr++] = State(currentState.pc + 1 + uint256(opcode - 0x5F), newStack, nextVisited);
+            }
+            // JUMPDEST
+            else if (opcode == 0x5B) {
+                 uint256[] memory newStack = nextStackBase; // produced=0
+                 if (ctx.controlStackPtr >= MAX_ITERATIONS)
+                     revert IterationLimitExceeded(MAX_ITERATIONS);
+                 ctx.controlStack[ctx.controlStackPtr++] = State(nextPc, newStack, nextVisited);
+            }
+            // JUMP
+            else if (opcode == 0x56) {
+                uint256 targetPc = currentState.stack[0];
+                if (targetPc == 0)  // We assume that jump to PC 0 cannot be legal, so we use value 0 as "unknown" or "not constant".
+                    revert JumpToNonConstantAddress(currentState.pc);
+                if (targetPc >= _code.length)
+                    revert JumpTargetOutOfBounds(targetPc, currentState.pc, _code.length);
+                if (uint8(_code[targetPc]) != 0x5B)
+                    revert InvalidJumpDestination(targetPc, currentState.pc);
+                ctx.controlStack[ctx.controlStackPtr++] = State(targetPc, nextStackBase, nextVisited);
+            }
+            // JUMPI
+            else if (opcode == 0x57) {
+                uint256 targetPc = currentState.stack[0];
+                if (targetPc == 0)  // We assume that jump to PC 0 cannot be legal, so we use value 0 as "unknown" or "not constant".
+                    revert JumpToNonConstantAddress(currentState.pc);
+                if (targetPc >= _code.length)
+                    revert JumpTargetOutOfBounds(targetPc, currentState.pc, _code.length);
+                if (uint8(_code[targetPc]) != 0x5B)
+                    revert InvalidJumpDestination(targetPc, currentState.pc);
+                ctx.controlStack[ctx.controlStackPtr++] = State(nextPc, nextStackBase, nextVisited);
+                ctx.controlStack[ctx.controlStackPtr++] = State(targetPc, nextStackBase, nextVisited);
+            }
+            // PC
+            else if (opcode == 0x58) {
+                uint256[] memory newStack = new uint256[](nextStackBase.length + produced); // produced=1
+                newStack[0] = currentState.pc;
+                for(uint i = 0; i < nextStackBase.length; ++i) {
+                    newStack[i + produced] = nextStackBase[i];
+                }
+                ctx.controlStack[ctx.controlStackPtr++] = State(nextPc, newStack, nextVisited);
+            }
+            // DUPx
+            else if (opcode >= 0x80 && opcode <= 0x8F) {
+                // Bespoke depth check already done
+                uint8 n = opcode - 0x80 + 1;
+                uint256 dupValue = currentState.stack[n-1];
+                uint256[] memory newStack = new uint256[](nextStackBase.length + produced); // produced=1
+                newStack[0] = dupValue;
+                for (uint i = 0; i < nextStackBase.length; ++i) {
+                    newStack[i+produced] = nextStackBase[i];
+                }
+                ctx.controlStack[ctx.controlStackPtr++] = State(nextPc, newStack, nextVisited);
+            }
+            // SWAPx
+            else if (opcode >= 0x90 && opcode <= 0x9F) {
+                // Bespoke depth check already done
+                uint8 n = opcode - 0x90 + 1;
+                uint256[] memory newStack = swapStack(currentState.stack, n); // Performs swap, size unchanged (produced=0)
+                ctx.controlStack[ctx.controlStackPtr++] = State(nextPc, newStack, nextVisited);
+            }
+             // Default Case (Arithmetic, Logic, CALL, LOG, etc.)
+            else {
+                // Assumes produced is 0 or 1 based on packed value
+                uint256[] memory newStack = new uint256[](nextStackBase.length + produced);
+                // Add placeholders (zeros are default)
+                // Copy base after placeholders
+                for (uint i = 0; i < nextStackBase.length; ++i) {
+                    newStack[i + produced] = nextStackBase[i];
+                }
+                ctx.controlStack[ctx.controlStackPtr++] = State(nextPc, newStack, nextVisited);
+            }
+        } // End while loop
+
+        // If the loop finishes without reverting, the code is considered valid (DAG) within the limits
+        valid = true;
     }
-
+    
     /**
      * Checking transaction before it is executed, by running an associated checker program
      *

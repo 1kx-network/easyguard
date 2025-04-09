@@ -120,6 +120,34 @@ describe("Safe with Guard", function () {
 
     });
 
+    describe("Direct code verification", function () {
+
+        it("Should verify a program that only returns true", async function() {
+            // Empty program bytecode (just returns true)
+            const trueProgram = "0x60205f80158152f3";
+
+            const easyGuard = await hre.viem.getContractAt(
+                "EasyGuard",
+                easyGuardAddress);
+
+            let result = await easyGuard.read.checkEvmByteCode([trueProgram]);
+            expect(result).to.be.true;
+        });
+
+        it("Should verify a program that only returns false", async function() {
+            // Empty program bytecode (just returns false)
+            const falseProgram = "0x60205f808052f300";
+
+
+            const easyGuard = await hre.viem.getContractAt(
+                "EasyGuard",
+                easyGuardAddress);
+
+            let result = await easyGuard.read.checkEvmByteCode([falseProgram]);
+            expect(result).to.be.true;
+        });
+    });
+
     it("Should Enable guard, and execute transactions", async function () {
         expect(await safe.isSafeDeployed()).to.be.true;
 
@@ -128,7 +156,6 @@ describe("Safe with Guard", function () {
             to: safeAddress,
             value: parseEther("1.0"),
         });
-
 
         // 3. Enable guard with empty program
 
@@ -204,7 +231,6 @@ describe("Safe with Guard", function () {
         // 3. Enable guard with empty program
 
         // Empty program bytecode (just returns false)
-        // const falseProgram = "0x600880805f395ff360205f808052f300";
         const falseProgram = "0x60205f808052f300";
 
         // Enable guard via delegate call
