@@ -101,29 +101,62 @@ contract EasyGuard is
         // This is verbose but necessary for immutable setup
         TempOpInfo[256] memory rules;
 
-        // --- Define Standard EVM Rules (where possible within constraints) ---
-        // Examples:
+        // Stop and arithmetic operations
         rules[0x00] = TempOpInfo(true, 0, 0); // STOP
         rules[0x01] = TempOpInfo(true, 2, 1); // ADD
         rules[0x02] = TempOpInfo(true, 2, 1); // MUL
         rules[0x03] = TempOpInfo(true, 2, 1); // SUB
-        // ... other arithmetic ...
-        rules[0x0a] = TempOpInfo(true, 2, 1); // EXP
+        rules[0x04] = TempOpInfo(true, 2, 1); // DIV
+        rules[0x05] = TempOpInfo(true, 2, 1); // SDIV
+        rules[0x06] = TempOpInfo(true, 2, 1); // MOD
+        rules[0x07] = TempOpInfo(true, 2, 1); // SMOD
+        rules[0x08] = TempOpInfo(true, 3, 1); // ADDMOD
+        rules[0x09] = TempOpInfo(true, 3, 1); // MULMOD
+        rules[0x0A] = TempOpInfo(true, 2, 1); // EXP
 
+        // Comparison & bitwise logic operations
         rules[0x10] = TempOpInfo(true, 2, 1); // LT
+        rules[0x11] = TempOpInfo(true, 2, 1); // GT
+        rules[0x12] = TempOpInfo(true, 2, 1); // SLT
+        rules[0x13] = TempOpInfo(true, 2, 1); // SGT
         rules[0x14] = TempOpInfo(true, 2, 1); // EQ
         rules[0x15] = TempOpInfo(true, 1, 1); // ISZERO
-        // ... other comparisons/bitwise ...
+        rules[0x16] = TempOpInfo(true, 2, 1); // AND
+        rules[0x17] = TempOpInfo(true, 2, 1); // OR
+        rules[0x18] = TempOpInfo(true, 2, 1); // XOR
         rules[0x19] = TempOpInfo(true, 1, 1); // NOT
+        rules[0x1A] = TempOpInfo(true, 2, 1); // BYTE
+        rules[0x1B] = TempOpInfo(true, 2, 1); // SHL
+        rules[0x1C] = TempOpInfo(true, 2, 1); // SHR
+        rules[0x1D] = TempOpInfo(true, 2, 1); // SAR
 
+        // SHA3
+        rules[0x20] = TempOpInfo(true, 2, 1); // SHA3
+
+        // Environmental Information
         rules[0x30] = TempOpInfo(true, 0, 1); // ADDRESS
         rules[0x31] = TempOpInfo(true, 1, 1); // BALANCE
-        // ... other env info ...
+        rules[0x32] = TempOpInfo(true, 0, 1); // ORIGIN
+        rules[0x33] = TempOpInfo(true, 0, 1); // CALLER
+        rules[0x34] = TempOpInfo(true, 0, 1); // CALLVALUE
+        rules[0x35] = TempOpInfo(true, 1, 1); // CALLDATALOAD
+        rules[0x36] = TempOpInfo(true, 0, 1); // CALLDATASIZE
+        rules[0x37] = TempOpInfo(true, 3, 0); // CALLDATACOPY
+        rules[0x38] = TempOpInfo(true, 0, 1); // CODESIZE
+        rules[0x39] = TempOpInfo(true, 3, 0); // CODECOPY
+        rules[0x3A] = TempOpInfo(true, 0, 1); // GASPRICE
 
+        // Block Information
         rules[0x40] = TempOpInfo(true, 1, 1); // BLOCKHASH
         rules[0x41] = TempOpInfo(true, 0, 1); // COINBASE
-         // ... other block info ...
+        rules[0x42] = TempOpInfo(true, 0, 1); // TIMESTAMP
+        rules[0x43] = TempOpInfo(true, 0, 1); // NUMBER
+        rules[0x44] = TempOpInfo(true, 0, 1); // DIFFICULTY/PREVRANDAO
+        rules[0x45] = TempOpInfo(true, 0, 1); // GASLIMIT
+        rules[0x46] = TempOpInfo(true, 0, 1); // CHAINID
+        rules[0x47] = TempOpInfo(true, 0, 1); // SELFBALANCE
 
+        // Stack, Memory, Storage and Flow Operations
         rules[0x50] = TempOpInfo(true, 1, 0); // POP
         rules[0x51] = TempOpInfo(true, 1, 1); // MLOAD
         rules[0x52] = TempOpInfo(true, 2, 0); // MSTORE
@@ -134,43 +167,30 @@ contract EasyGuard is
         rules[0x57] = TempOpInfo(true, 2, 0); // JUMPI
         rules[0x58] = TempOpInfo(true, 0, 1); // PC
         rules[0x59] = TempOpInfo(true, 0, 1); // MSIZE
-        rules[0x5a] = TempOpInfo(true, 0, 1); // GAS
+        rules[0x5A] = TempOpInfo(true, 0, 1); // GAS
         rules[0x5B] = TempOpInfo(true, 0, 0); // JUMPDEST
+        rules[0x5E] = TempOpInfo(true, 3, 0); // MCOPY
 
-        // PUSH1-PUSH32 (0x60-0x7F)
-        for (uint8 i = 0x60; i <= 0x7F; i++) {
-            rules[i] = TempOpInfo(true, 0, 1);
+        // Push operations (0x5F-0x7F) -> (t 0 1)
+        for (uint8 i = 0x5F; i <= 0x7F; i++) {
+            rules[i] = TempOpInfo(true, 0, 1); // PUSH0-PUSH32
         }
-        // DUP1-DUP16 (0x80-0x8F)
+
+        // Duplication operations (0x80-0x8F) -> (t 0 1)
         for (uint8 i = 0x80; i <= 0x8F; i++) {
-            // uint8 n = i - 0x80 + 1; // Requires stack depth N
-            rules[i] = TempOpInfo(true, 0, 1); // Consumes(Removed)=0, Produces(Added)=1
+            rules[i] = TempOpInfo(true, 0, 1); // DUP1-DUP16
         }
-        // SWAP1-SWAP16 (0x90-0x9F)
+
+        // Exchange operations (0x90-0x9F) -> (t 1 1)
         for (uint8 i = 0x90; i <= 0x9F; i++) {
-            // uint8 n = i - 0x90 + 1; // Requires stack depth N+1
-            rules[i] = TempOpInfo(true, 0, 0); // Consumes(Removed)=0, Produces(Added)=0
+            rules[i] = TempOpInfo(true, 1, 1); // SWAP1-SWAP16 (Simplified rule)
         }
-        // LOG0-LOG4 (0xA0-0xA4) - Consumed > 3 for LOG3, LOG4
-        rules[0xa0] = TempOpInfo(true, 2, 0);
-        rules[0xa1] = TempOpInfo(true, 3, 0);
-        rules[0xa2] = TempOpInfo(true, 4, 0);
-        rules[0xa3] = TempOpInfo(true, 5, 0);
-        rules[0xa4] = TempOpInfo(true, 6, 0);
 
-        // System operations
-        rules[0xf3] = TempOpInfo(true, 2, 0); // RETURN
-        rules[0xfd] = TempOpInfo(true, 2, 0); // REVERT
-        rules[0xfe] = TempOpInfo(true, 0, 0); // INVALID (treat as allowed but terminating)
+        // RETURN is allowed
+        rules[0xF3] = TempOpInfo(true, 2, 0); // RETURN
+        // System operations: REVERT is allowed
+        rules[0xFD] = TempOpInfo(true, 2, 0); // REVERT
 
-        // CALL consumes 7 - Fits the 3 bits!
-        rules[0xf1] = TempOpInfo(true, 7, 1); // CALL
-        // Other calls need similar checks...
-        rules[0xf0] = TempOpInfo(true, 3, 1); // CREATE
-        rules[0xf2] = TempOpInfo(true, 7, 1); // CALLCODE (deprecated but fits)
-        rules[0xf4] = TempOpInfo(true, 6, 1); // DELEGATECALL
-        rules[0xf5] = TempOpInfo(true, 4, 1); // CREATE2
-        rules[0xfa] = TempOpInfo(true, 6, 1); // STATICCALL
 
         // --- Pack the rules into the immutable variables ---
         for (uint256 i = 0; i < 256; i++) {
