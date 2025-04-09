@@ -113,6 +113,7 @@ contract EasyGuard is
         rules[0x08] = TempOpInfo(true, 3, 1); // ADDMOD
         rules[0x09] = TempOpInfo(true, 3, 1); // MULMOD
         rules[0x0A] = TempOpInfo(true, 2, 1); // EXP
+        rules[0x0B] = TempOpInfo(true, 2, 1); // SIGNEXTEND
 
         // Comparison & bitwise logic operations
         rules[0x10] = TempOpInfo(true, 2, 1); // LT
@@ -222,100 +223,6 @@ contract EasyGuard is
         packedConsumedProduced2 = buildPackedConsumedProduced[2];
         packedConsumedProduced3 = buildPackedConsumedProduced[3];
     }        
-
-    /*
-    constructor() {
-        // Initialize opcode table
-        // Format: (allowed << 4) | (consumed << 2) | produced
-
-        // Stop and arithmetic operations
-        opcodeTable[0x00] = 0x10; // STOP: 0/0
-        opcodeTable[0x01] = 0x15; // ADD: 2/1
-        opcodeTable[0x02] = 0x15; // MUL: 2/1
-        opcodeTable[0x03] = 0x15; // SUB: 2/1
-        opcodeTable[0x04] = 0x15; // DIV: 2/1
-        opcodeTable[0x05] = 0x15; // SDIV: 2/1
-        opcodeTable[0x06] = 0x15; // MOD: 2/1
-        opcodeTable[0x07] = 0x15; // SMOD: 2/1
-        opcodeTable[0x08] = 0x17; // ADDMOD: 3/1
-        opcodeTable[0x09] = 0x17; // MULMOD: 3/1
-        opcodeTable[0x0A] = 0x15; // EXP: 2/1
-
-        // Comparison & bitwise logic operations
-        opcodeTable[0x10] = 0x15; // LT: 2/1
-        opcodeTable[0x11] = 0x15; // GT: 2/1
-        opcodeTable[0x12] = 0x15; // SLT: 2/1
-        opcodeTable[0x13] = 0x15; // SGT: 2/1
-        opcodeTable[0x14] = 0x15; // EQ: 2/1
-        opcodeTable[0x15] = 0x11; // ISZERO: 1/1
-        opcodeTable[0x16] = 0x15; // AND: 2/1
-        opcodeTable[0x17] = 0x15; // OR: 2/1
-        opcodeTable[0x18] = 0x15; // XOR: 2/1
-        opcodeTable[0x19] = 0x11; // NOT: 1/1
-
-        // SHA3
-        opcodeTable[0x20] = 0x15; // SHA3: 2/1
-
-        // Environmental Information
-        opcodeTable[0x30] = 0x14; // ADDRESS: 0/1
-        opcodeTable[0x31] = 0x14; // BALANCE: 1/1
-        opcodeTable[0x32] = 0x14; // ORIGIN: 0/1
-        opcodeTable[0x33] = 0x14; // CALLER: 0/1
-        opcodeTable[0x34] = 0x14; // CALLVALUE: 0/1
-        opcodeTable[0x35] = 0x11; // CALLDATALOAD: 1/1
-        opcodeTable[0x36] = 0x14; // CALLDATASIZE: 0/1
-        opcodeTable[0x37] = 0x17; // CALLDATACOPY: 3/0
-        opcodeTable[0x38] = 0x14; // CODESIZE: 0/1
-        opcodeTable[0x39] = 0x17; // CODECOPY: 3/0
-        opcodeTable[0x3A] = 0x14; // GASPRICE: 0/1
-
-        // Block Information
-        opcodeTable[0x40] = 0x14; // BLOCKHASH: 1/1
-        opcodeTable[0x41] = 0x14; // COINBASE: 0/1
-        opcodeTable[0x42] = 0x14; // TIMESTAMP: 0/1
-        opcodeTable[0x43] = 0x14; // NUMBER: 0/1
-        opcodeTable[0x44] = 0x14; // DIFFICULTY: 0/1
-        opcodeTable[0x45] = 0x14; // GASLIMIT: 0/1
-
-        // Stack, Memory, Storage and Flow Operations
-        opcodeTable[0x50] = 0x11; // POP: 1/0
-        opcodeTable[0x51] = 0x11; // MLOAD: 1/1
-        opcodeTable[0x52] = 0x15; // MSTORE: 2/0
-        opcodeTable[0x53] = 0x15; // MSTORE8: 2/0
-        opcodeTable[0x54] = 0x11; // SLOAD: 1/1
-        opcodeTable[0x55] = 0x15; // SSTORE: 2/0
-        opcodeTable[0x56] = 0x11; // JUMP: 1/0
-        opcodeTable[0x57] = 0x12; // JUMPI: 2/0
-        opcodeTable[0x58] = 0x14; // PC: 0/1
-        opcodeTable[0x59] = 0x14; // MSIZE: 0/1
-        opcodeTable[0x5B] = 0x10; // JUMPDEST: 0/0
-
-        // Push operations (0x5F-0x7F)
-        for (uint8 i = 0x5F; i <= 0x7F; i++) {
-            opcodeTable[i] = 0x14; // PUSH1-PUSH32: 0/1
-        }
-
-        // Duplication operations (0x80-0x8F)
-        for (uint8 i = 0x80; i <= 0x8F; i++) {
-            opcodeTable[i] = 0x14; // DUP1-DUP16: 1/2 (duplicates top stack item)
-        }
-
-        // Exchange operations (0x90-0x9F)
-        for (uint8 i = 0x90; i <= 0x9F; i++) {
-            opcodeTable[i] = 0x12; // SWAP1-SWAP16: 2/2 (swaps stack items)
-        }
-
-        // Logging operations are not allowed
-        // Calls are not allowed
-        // TODO: we may allow STATICCALL to a whitelist of contracts and methods.
-
-        // RETURN is allowed
-        opcodeTable[0xF3] = 0x15; // RETURN: 2/0
-        // System operations: REVERT is allowed
-        opcodeTable[0xFD] = 0x15; // REVERT: 2/0
-    }
-    
-    */
 
     // solhint-disable-next-line payable-fallback
     fallback() external {}

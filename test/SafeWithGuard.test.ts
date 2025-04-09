@@ -7,7 +7,7 @@ import Safe, {
     SafeAccountConfig,
 } from '@safe-global/protocol-kit';
 import hre from "hardhat";
-import { WalletClient, PublicClient, zeroAddress, parseEther, encodeFunctionData, toHex} from "viem";
+import { WalletClient, PublicClient, zeroAddress, parseEther, encodeFunctionData, toHex, fromHex, concatHex } from "viem";
 import { MetaTransactionData, OperationType } from "@safe-global/types-kit";
 import EasyGuardArtifact from "../artifacts/contracts/Guard.sol/EasyGuard.json";
 
@@ -120,13 +120,13 @@ describe("Safe with Guard", function () {
 
     });
 
-    describe("Direct code verification", async function () {
+    describe("Direct code verification", function () {
 
-        const easyGuard = await hre.viem.getContractAt(
-            "EasyGuard",
-            easyGuardAddress);
 
-         it("Should verify a program that only returns true", async function() {
+        it("Should verify a program that only returns true", async function() {
+            const easyGuard = await hre.viem.getContractAt(
+                "EasyGuard",
+                easyGuardAddress);
              // Empty program bytecode (just returns true)
              const trueProgram = "0x60205f80158152f3";
 
@@ -135,61 +135,85 @@ describe("Safe with Guard", function () {
          });
 
          it("Should verify a program that only returns false", async function() {
+             const easyGuard = await hre.viem.getContractAt(
+                 "EasyGuard",
+                 easyGuardAddress);
              // Empty program bytecode (just returns false)
              const falseProgram = "0x60205f808052f300";
              let result = await easyGuard.read.checkEvmByteCode([falseProgram]);
              expect(result).to.be.true;
          });
 
-        describe("Should reject programs with forbidden instructions", async function() {
+        describe("Should reject programs with forbidden instructions", function() {
             async function checkReject(instruction) {
-                await expect (easyGuard.read.checkEvmByteCode([instruction]))
-                              .to.be.rejected;
+                const stackfillers = '0x5F5F5F5F5F';
+                const program = concatHex([
+                    stackfillers,
+                    instruction.startsWith('0x') ? instruction : `0x${instruction}`
+                ]);
+                const easyGuard = await hre.viem.getContractAt(
+                    "EasyGuard",
+                    easyGuardAddress);
+                await expect(easyGuard.read.checkEvmByteCode([program])).to.be.rejected;
             }
-            it("0x0C", async function() { checkReject("0x0C"); });
-            it("0x0D", async function() { checkReject("0x0D"); });
-            it("0x0E", async function() { checkReject("0x0E"); });
-            it("0x0F", async function() { checkReject("0x0F"); });
-            it("0x1E", async function() { checkReject("0x1E"); });
-            it("0x1F", async function() { checkReject("0x1F"); });
+            async function checkAccept(instruction) {
+                const stackfillers = '0x5F5F5F5F5F';
+                const program = concatHex([
+                    stackfillers,
+                    instruction.startsWith('0x') ? instruction : `0x${instruction}`
+                ]);
+                const easyGuard = await hre.viem.getContractAt(
+                    "EasyGuard",
+                    easyGuardAddress);
+                let result = await easyGuard.read.checkEvmByteCode([program]);
+                expect(result).to.be.true;
+            }
+            
+            it("0x0B", async function() { await checkAccept("0x0B"); });
+            it("0x0C", async function() { await checkReject("0x0C"); });
+            it("0x0D", async function() { await checkReject("0x0D"); });
+            it("0x0E", async function() { await checkReject("0x0E"); });
+            it("0x0F", async function() { await checkReject("0x0F"); });
+            it("0x1E", async function() { await checkReject("0x1E"); });
+            it("0x1F", async function() { await checkReject("0x1F"); });
 
-            it("EXTCODESIZE", async function() { checkReject("0x3B"); });
-            it("EXTCODECOPY", async function() { checkReject("0x3C"); });
-            it("RETURNDATASIZE", async function() { checkReject("0x3D"); });
-            it("RETURNDATACOPY", async function() { checkReject("0x3E"); });
-            it("EXTCODEHASH", async function() { checkReject("0x3F"); });
+            it("EXTCODESIZE", async function() { await checkReject("0x3B"); });
+            it("EXTCODECOPY", async function() { await checkReject("0x3C"); });
+            it("RETURNDATASIZE", async function() { await checkReject("0x3D"); });
+            it("RETURNDATACOPY", async function() { await checkReject("0x3E"); });
+            it("EXTCODEHASH", async function() { await checkReject("0x3F"); });
 
-            it("BASEFEE", async function() { checkReject("0x48"); });
-            it("BLOBHASH", async function() { checkReject("0x49"); });
-            it("BLOBBASEFEE", async function() { checkReject("0x4A"); });
+            it("BASEFEE", async function() { await checkReject("0x48"); });
+            it("BLOBHASH", async function() { await checkReject("0x49"); });
+            it("BLOBBASEFEE", async function() { await checkReject("0x4A"); });
 
             // 0x5C - 0x5D are undefined
-            it("TLOAD", async function() { checkReject("0x5C"); });
-            it("TSTORE", async function() { checkReject("0x5D"); });
+            it("TLOAD", async function() { await checkReject("0x5C"); });
+            it("TSTORE", async function() { await checkReject("0x5D"); });
 
-            it("LOG0", async function() { checkReject("0xA0"); });
-            it("LOG1", async function() { checkReject("0xA1"); });
-            it("LOG2", async function() { checkReject("0xA2"); });
-            it("LOG3", async function() { checkReject("0xA3"); });
-            it("LOG4", async function() { checkReject("0xA4"); });
+            it("LOG0", async function() { await checkReject("0xA0"); });
+            it("LOG1", async function() { await checkReject("0xA1"); });
+            it("LOG2", async function() { await checkReject("0xA2"); });
+            it("LOG3", async function() { await checkReject("0xA3"); });
+            it("LOG4", async function() { await checkReject("0xA4"); });
             // 0xA5 - 0xAF are undefined
 
             for (let instr=0xA5; instr <= 0xEF; instr++) {
-                it(toHex(instr), async function() { checkReject(toHex(instr)); });
+                it(toHex(instr), async function() { await checkReject(toHex(instr)); });
             }
 
-            it("CREATE", async function() { checkReject("0xF0"); });
-            it("CALL", async function() { checkReject("0xF1"); });
-            it("CALLCODE", async function() { checkReject("0xF2"); });
+            it("CREATE", async function() { await checkReject("0xF0"); });
+            it("CALL", async function() { await checkReject("0xF1"); });
+            it("CALLCODE", async function() { await checkReject("0xF2"); });
             // F3 is RETURN (allowed)
-            it("DELEGATECALL", async function() { checkReject("0xF4"); });
-            it("CREATE2", async function() { checkReject("0xF5"); });
+            it("DELEGATECALL", async function() { await checkReject("0xF4"); });
+            it("CREATE2", async function() { await checkReject("0xF5"); });
             // 0xF6 - 0xF9 are undefined
-            it("STATICCALL", async function() { checkReject("0xFA"); });
+            it("STATICCALL", async function() { await checkReject("0xFA"); });
             // 0xFB - 0xFC are undefined
             // FD is REVERT (allowed)
-            it("INVALID", async function() { checkReject("0xFE"); });
-            it("SELFDESTRUCT", async function() { checkReject("0xFF"); });
+            it("INVALID", async function() { await checkReject("0xFE"); });
+            it("SELFDESTRUCT", async function() { await checkReject("0xFF"); });
         });
     });
 
