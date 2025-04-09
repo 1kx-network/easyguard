@@ -121,7 +121,40 @@ describe("Safe with Guard", function () {
     });
 
     describe("Direct code verification", function () {
-
+        async function checkAccept(instruction) {
+            const stackfillers = '0x600180808080808080808080808080808080';
+            const program = concatHex([
+                stackfillers,
+                instruction.startsWith('0x') ? instruction : `0x${instruction}`
+            ]);
+            const easyGuard = await hre.viem.getContractAt(
+                "EasyGuard",
+                easyGuardAddress);
+            let result = await easyGuard.read.checkEvmByteCode([program]);
+            expect(result).to.be.true;
+        }
+        async function checkReject(instruction) {
+            const stackfillers = '0x600180808080808080808080808080808080';
+            const program = concatHex([
+                stackfillers,
+                instruction.startsWith('0x') ? instruction : `0x${instruction}`
+            ]);
+            const easyGuard = await hre.viem.getContractAt(
+                "EasyGuard",
+                easyGuardAddress);
+            await expect(easyGuard.read.checkEvmByteCode([program])).to.be.rejected;
+        }
+        async function checkRejectWith(instruction, event, initialStack) {
+            const stackfillers = initialStack || '0x5F5F5F5F5F';
+            const program = concatHex([
+                stackfillers,
+                instruction.startsWith('0x') ? instruction : `0x${instruction}`
+            ]);
+            const easyGuard = await hre.viem.getContractAt(
+                "EasyGuard",
+                easyGuardAddress);
+            await expect(easyGuard.read.checkEvmByteCode([program])).to.be.rejectedWith(event);
+        }
 
         it("Should verify a program that only returns true", async function() {
             const easyGuard = await hre.viem.getContractAt(
@@ -145,19 +178,6 @@ describe("Safe with Guard", function () {
          });
 
         describe("Should accept allowed instructions", function() {
-            async function checkAccept(instruction) {
-                const stackfillers = '0x600180808080808080808080808080808080';
-                const program = concatHex([
-                    stackfillers,
-                    instruction.startsWith('0x') ? instruction : `0x${instruction}`
-                ]);
-                const easyGuard = await hre.viem.getContractAt(
-                    "EasyGuard",
-                    easyGuardAddress);
-                let result = await easyGuard.read.checkEvmByteCode([program]);
-                expect(result).to.be.true;
-            }
-
             it("STOP", async function() { await checkAccept("0x00"); });
             it("ADD", async function() { await checkAccept("0x01"); });
             it("MUL", async function() { await checkAccept("0x02"); });
@@ -173,17 +193,6 @@ describe("Safe with Guard", function () {
         });
 
         describe("Should reject programs with forbidden instructions", function() {
-            async function checkReject(instruction) {
-                const stackfillers = '0x5F5F5F5F5F';
-                const program = concatHex([
-                    stackfillers,
-                    instruction.startsWith('0x') ? instruction : `0x${instruction}`
-                ]);
-                const easyGuard = await hre.viem.getContractAt(
-                    "EasyGuard",
-                    easyGuardAddress);
-                await expect(easyGuard.read.checkEvmByteCode([program])).to.be.rejected;
-            }
             it("0x0C", async function() { await checkReject("0x0C"); });
             it("0x0D", async function() { await checkReject("0x0D"); });
             it("0x0E", async function() { await checkReject("0x0E"); });
@@ -229,6 +238,19 @@ describe("Safe with Guard", function () {
             it("INVALID", async function() { await checkReject("0xFE"); });
             it("SELFDESTRUCT", async function() { await checkReject("0xFF"); });
         });
+
+        describe("Should reject invalid JUMP", function() {
+            it("JUMP to nonconstant", async function() { await checkRejectWith("0x56", "JumpToNonConstantAddress"); });
+            it("JUMP to invalid", async function() { await checkRejectWith("0x56", "InvalidJumpDestination", "0x60018080"); });
+            it("JUMP outside the range", async function() { await checkRejectWith("0x56", "JumpTargetOutOfBounds", "0x60FF8080"); });
+            it("JUMPI to nonconstant", async function() { await checkRejectWith("0x57", "JumpToNonConstantAddress"); });
+            it("JUMPI to invalid", async function() { await checkRejectWith("0x57", "InvalidJumpDestination", "0x60018080"); });
+            it("JUMPI outside the range", async function() { await checkRejectWith("0x57", "JumpTargetOutOfBounds", "0x60FF8080"); });
+        });
+        describe("Should be robust in detecting control graph cycles", function() {
+            it("JUMP cycle", async function() { await checkRejectWith("0x56", "CycleDetected", "0x60025B8080"); });
+        });
+
     });
 
 
