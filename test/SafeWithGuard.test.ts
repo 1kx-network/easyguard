@@ -144,6 +144,34 @@ describe("Safe with Guard", function () {
              expect(result).to.be.true;
          });
 
+        describe("Should accept allowed instructions", function() {
+            async function checkAccept(instruction) {
+                const stackfillers = '0x600180808080808080808080808080808080';
+                const program = concatHex([
+                    stackfillers,
+                    instruction.startsWith('0x') ? instruction : `0x${instruction}`
+                ]);
+                const easyGuard = await hre.viem.getContractAt(
+                    "EasyGuard",
+                    easyGuardAddress);
+                let result = await easyGuard.read.checkEvmByteCode([program]);
+                expect(result).to.be.true;
+            }
+
+            it("STOP", async function() { await checkAccept("0x00"); });
+            it("ADD", async function() { await checkAccept("0x01"); });
+            it("MUL", async function() { await checkAccept("0x02"); });
+            it("SUB", async function() { await checkAccept("0x03"); });
+            it("DIV", async function() { await checkAccept("0x04"); });
+            it("SDIV", async function() { await checkAccept("0x05"); });
+            it("MOD", async function() { await checkAccept("0x06"); });
+            it("SMOD", async function() { await checkAccept("0x07"); });
+            it("ADDMOD", async function() { await checkAccept("0x08"); });
+            it("MULMOD", async function() { await checkAccept("0x09"); });
+            it("EXP", async function() { await checkAccept("0x0A"); });
+            it("SIGNEXTEND", async function() { await checkAccept("0x0B"); });
+        });
+
         describe("Should reject programs with forbidden instructions", function() {
             async function checkReject(instruction) {
                 const stackfillers = '0x5F5F5F5F5F';
@@ -156,20 +184,6 @@ describe("Safe with Guard", function () {
                     easyGuardAddress);
                 await expect(easyGuard.read.checkEvmByteCode([program])).to.be.rejected;
             }
-            async function checkAccept(instruction) {
-                const stackfillers = '0x5F5F5F5F5F';
-                const program = concatHex([
-                    stackfillers,
-                    instruction.startsWith('0x') ? instruction : `0x${instruction}`
-                ]);
-                const easyGuard = await hre.viem.getContractAt(
-                    "EasyGuard",
-                    easyGuardAddress);
-                let result = await easyGuard.read.checkEvmByteCode([program]);
-                expect(result).to.be.true;
-            }
-            
-            it("0x0B", async function() { await checkAccept("0x0B"); });
             it("0x0C", async function() { await checkReject("0x0C"); });
             it("0x0D", async function() { await checkReject("0x0D"); });
             it("0x0E", async function() { await checkReject("0x0E"); });
@@ -217,7 +231,7 @@ describe("Safe with Guard", function () {
         });
     });
 
-    
+
     it("Should Enable guard, and execute transactions", async function () {
         expect(await safe.isSafeDeployed()).to.be.true;
 
