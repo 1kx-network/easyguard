@@ -547,9 +547,9 @@ contract EasyGuard is
      */
     function checkEvmByteCode(bytes memory _code) public view returns (bool valid) {
         if (_code.length == 0) return true;
-        if (_code.length > type(uint16).max + 1)
+        if (_code.length > 24576) {
             revert PcExceedsUint16Limit(_code.length);
-
+        }
         EvmCheckerContext memory ctx = EvmCheckerContext({
             controlStack: new State[](MAX_ITERATIONS),
                     controlStackPtr: 0,
