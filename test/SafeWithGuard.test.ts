@@ -120,34 +120,79 @@ describe("Safe with Guard", function () {
 
     });
 
-    describe("Direct code verification", function () {
+    describe("Direct code verification", async function () {
 
-        it("Should verify a program that only returns true", async function() {
-            // Empty program bytecode (just returns true)
-            const trueProgram = "0x60205f80158152f3";
+        const easyGuard = await hre.viem.getContractAt(
+            "EasyGuard",
+            easyGuardAddress);
+ 
+         it("Should verify a program that only returns true", async function() {
+             // Empty program bytecode (just returns true)
+             const trueProgram = "0x60205f80158152f3";
+ 
+             let result = await easyGuard.read.checkEvmByteCode([trueProgram]);
+             expect(result).to.be.true;
+         });
 
-            const easyGuard = await hre.viem.getContractAt(
-                "EasyGuard",
-                easyGuardAddress);
+         it("Should verify a program that only returns false", async function() {
+             // Empty program bytecode (just returns false)
+             const falseProgram = "0x60205f808052f300";
+             let result = await easyGuard.read.checkEvmByteCode([falseProgram]);
+             expect(result).to.be.true;
+         });
 
-            let result = await easyGuard.read.checkEvmByteCode([trueProgram]);
-            expect(result).to.be.true;
-        });
+        describe("Should reject programs with forbidden instructions", async function() {
+            async function checkReject(instruction) {
+                await expect (easyGuard.read.checkEvmByteCode([instruction]))
+                              .to.be.rejected;
+            }
+            it("0x0C", async function() { checkReject("0x0C"); });
+            it("0x0D", async function() { checkReject("0x0D"); });
+            it("0x0E", async function() { checkReject("0x0E"); });
+            it("0x0F", async function() { checkReject("0x0F"); });
+            it("0x1E", async function() { checkReject("0x1E"); });
+            it("0x1F", async function() { checkReject("0x1F"); });
+            
+            it("EXTCODESIZE", async function() { checkReject("0x3B"); });
+            it("EXTCODECOPY", async function() { checkReject("0x3C"); });
+            it("RETURNDATASIZE", async function() { checkReject("0x3D"); });
+            it("RETURNDATACOPY", async function() { checkReject("0x3E"); });
+            it("EXTCODEHASH", async function() { checkReject("0x3F"); });
+            
+            it("BASEFEE", async function() { checkReject("0x48"); });
+            it("BLOBHASH", async function() { checkReject("0x49"); });
+            it("BLOBBASEFEE", async function() { checkReject("0x4A"); });
+            
+            // 0x5C - 0x5D are undefined
+            it("TLOAD", async function() { checkReject("0x5C"); });
+            it("TSTORE", async function() { checkReject("0x5D"); });
+            
+            it("LOG0", async function() { checkReject("0xA0"); });
+            it("LOG1", async function() { checkReject("0xA1"); });
+            it("LOG2", async function() { checkReject("0xA2"); });
+            it("LOG3", async function() { checkReject("0xA3"); });
+            it("LOG4", async function() { checkReject("0xA4"); });
+            // 0xA5 - 0xAF are undefined
 
-        it("Should verify a program that only returns false", async function() {
-            // Empty program bytecode (just returns false)
-            const falseProgram = "0x60205f808052f300";
+            for (let instr=0xA5; instr <= 0xEF; instr++) {
+                it(toHex(instr), async function() { checkReject(toHex(instr)); });
+            }
 
-
-            const easyGuard = await hre.viem.getContractAt(
-                "EasyGuard",
-                easyGuardAddress);
-
-            let result = await easyGuard.read.checkEvmByteCode([falseProgram]);
-            expect(result).to.be.true;
+            it("CREATE", async function() { checkReject("0xF0"); });
+            it("CALL", async function() { checkReject("0xF1"); });
+            it("CALLCODE", async function() { checkReject("0xF2"); });
+            // F3 is RETURN (allowed)
+            it("DELEGATECALL", async function() { checkReject("0xF4"); });
+            it("CREATE2", async function() { checkReject("0xF5"); });
+            // 0xF6 - 0xF9 are undefined
+            it("STATICCALL", async function() { checkReject("0xFA"); });
+            // 0xFB - 0xFC are undefined
+            // FD is REVERT (allowed)
+            it("INVALID", async function() { checkReject("0xFE"); });
+            it("SELFDESTRUCT", async function() { checkReject("0xFF"); });
         });
     });
-
+    
     it("Should Enable guard, and execute transactions", async function () {
         expect(await safe.isSafeDeployed()).to.be.true;
 
@@ -156,6 +201,7 @@ describe("Safe with Guard", function () {
             to: safeAddress,
             value: parseEther("1.0"),
         });
+
 
         // 3. Enable guard with empty program
 
@@ -231,6 +277,7 @@ describe("Safe with Guard", function () {
         // 3. Enable guard with empty program
 
         // Empty program bytecode (just returns false)
+        // const falseProgram = "0x600880805f395ff360205f808052f300";
         const falseProgram = "0x60205f808052f300";
 
         // Enable guard via delegate call
