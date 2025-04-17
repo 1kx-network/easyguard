@@ -10,6 +10,7 @@ import hre from "hardhat";
 import { WalletClient, PublicClient, zeroAddress, parseEther, encodeFunctionData, toHex, fromHex, concatHex } from "viem";
 import { MetaTransactionData, OperationType } from "@safe-global/types-kit";
 import EasyGuardArtifact from "../artifacts/contracts/Guard.sol/EasyGuard.json";
+import { getContractDeployedCode } from "./helpers/utils";
 
 describe("Safe with Guard", function () {
     let namedAccounts: { [name: string]: string };
@@ -48,7 +49,7 @@ describe("Safe with Guard", function () {
         const deployedCompatibilityFallbackHandler = await deployments.get("CompatibilityFallbackHandler");
         const deployedSignMessageLib = await deployments.get("SignMessageLib");
         const deployedCreateCall = await deployments.get("CreateCall");
-        const chainId: number = walletClient.chain.id;
+        const chainId: number = walletClient.chain!.id;
         const chainIdStr = chainId.toString();
         console.log("chainId: ", chainIdStr);
         const contractNetworks: ContractNetworksConfig = {
@@ -67,7 +68,7 @@ describe("Safe with Guard", function () {
         };
 
 
-        const safeAccountConfig: SafeAccountConfig =  {
+        const safeAccountConfig: SafeAccountConfig = {
             owners: [namedAccounts.users],
             threshold: 1,
         };
@@ -156,103 +157,241 @@ describe("Safe with Guard", function () {
             await expect(easyGuard.read.checkEvmByteCode([program])).to.be.rejectedWith(event);
         }
 
-        it("Should verify a program that only returns true", async function() {
+        it("Should verify a program that only returns true", async function () {
             const easyGuard = await hre.viem.getContractAt(
                 "EasyGuard",
                 easyGuardAddress);
-             // Empty program bytecode (just returns true)
-             const trueProgram = "0x60205f80158152f3";
+            // Empty program bytecode (just returns true)
+            const trueProgram = "0x60205f80158152f3";
 
-             let result = await easyGuard.read.checkEvmByteCode([trueProgram]);
-             expect(result).to.be.true;
-         });
-
-         it("Should verify a program that only returns false", async function() {
-             const easyGuard = await hre.viem.getContractAt(
-                 "EasyGuard",
-                 easyGuardAddress);
-             // Empty program bytecode (just returns false)
-             const falseProgram = "0x60205f808052f300";
-             let result = await easyGuard.read.checkEvmByteCode([falseProgram]);
-             expect(result).to.be.true;
-         });
-
-        describe("Should accept allowed instructions", function() {
-            it("STOP", async function() { await checkAccept("0x00"); });
-            it("ADD", async function() { await checkAccept("0x01"); });
-            it("MUL", async function() { await checkAccept("0x02"); });
-            it("SUB", async function() { await checkAccept("0x03"); });
-            it("DIV", async function() { await checkAccept("0x04"); });
-            it("SDIV", async function() { await checkAccept("0x05"); });
-            it("MOD", async function() { await checkAccept("0x06"); });
-            it("SMOD", async function() { await checkAccept("0x07"); });
-            it("ADDMOD", async function() { await checkAccept("0x08"); });
-            it("MULMOD", async function() { await checkAccept("0x09"); });
-            it("EXP", async function() { await checkAccept("0x0A"); });
-            it("SIGNEXTEND", async function() { await checkAccept("0x0B"); });
+            let result = await easyGuard.read.checkEvmByteCode([trueProgram]);
+            expect(result).to.be.true;
         });
 
-        describe("Should reject programs with forbidden instructions", function() {
-            it("0x0C", async function() { await checkReject("0x0C"); });
-            it("0x0D", async function() { await checkReject("0x0D"); });
-            it("0x0E", async function() { await checkReject("0x0E"); });
-            it("0x0F", async function() { await checkReject("0x0F"); });
-            it("0x1E", async function() { await checkReject("0x1E"); });
-            it("0x1F", async function() { await checkReject("0x1F"); });
+        it("Should verify a program that only returns false", async function () {
+            const easyGuard = await hre.viem.getContractAt(
+                "EasyGuard",
+                easyGuardAddress);
+            // Empty program bytecode (just returns false)
+            const falseProgram = "0x60205f808052f300";
+            let result = await easyGuard.read.checkEvmByteCode([falseProgram]);
+            expect(result).to.be.true;
+        });
 
-            it("EXTCODESIZE", async function() { await checkReject("0x3B"); });
-            it("EXTCODECOPY", async function() { await checkReject("0x3C"); });
-            it("RETURNDATASIZE", async function() { await checkReject("0x3D"); });
-            it("RETURNDATACOPY", async function() { await checkReject("0x3E"); });
-            it("EXTCODEHASH", async function() { await checkReject("0x3F"); });
+        describe("Should accept allowed instructions", function () {
+            it("STOP", async function () { await checkAccept("0x00"); });
+            it("ADD", async function () { await checkAccept("0x01"); });
+            it("MUL", async function () { await checkAccept("0x02"); });
+            it("SUB", async function () { await checkAccept("0x03"); });
+            it("DIV", async function () { await checkAccept("0x04"); });
+            it("SDIV", async function () { await checkAccept("0x05"); });
+            it("MOD", async function () { await checkAccept("0x06"); });
+            it("SMOD", async function () { await checkAccept("0x07"); });
+            it("ADDMOD", async function () { await checkAccept("0x08"); });
+            it("MULMOD", async function () { await checkAccept("0x09"); });
+            it("EXP", async function () { await checkAccept("0x0A"); });
+            it("SIGNEXTEND", async function () { await checkAccept("0x0B"); });
+        });
 
-            it("BASEFEE", async function() { await checkReject("0x48"); });
-            it("BLOBHASH", async function() { await checkReject("0x49"); });
-            it("BLOBBASEFEE", async function() { await checkReject("0x4A"); });
+        describe("Should reject programs with forbidden instructions", function () {
+            it("0x0C", async function () { await checkReject("0x0C"); });
+            it("0x0D", async function () { await checkReject("0x0D"); });
+            it("0x0E", async function () { await checkReject("0x0E"); });
+            it("0x0F", async function () { await checkReject("0x0F"); });
+            it("0x1E", async function () { await checkReject("0x1E"); });
+            it("0x1F", async function () { await checkReject("0x1F"); });
+
+            it("EXTCODESIZE", async function () { await checkReject("0x3B"); });
+            it("EXTCODECOPY", async function () { await checkReject("0x3C"); });
+            it("RETURNDATASIZE", async function () { await checkReject("0x3D"); });
+            it("RETURNDATACOPY", async function () { await checkReject("0x3E"); });
+            it("EXTCODEHASH", async function () { await checkReject("0x3F"); });
+
+            it("BASEFEE", async function () { await checkReject("0x48"); });
+            it("BLOBHASH", async function () { await checkReject("0x49"); });
+            it("BLOBBASEFEE", async function () { await checkReject("0x4A"); });
 
             // 0x5C - 0x5D are undefined
-            it("TLOAD", async function() { await checkReject("0x5C"); });
-            it("TSTORE", async function() { await checkReject("0x5D"); });
+            it("TLOAD", async function () { await checkReject("0x5C"); });
+            it("TSTORE", async function () { await checkReject("0x5D"); });
 
-            it("LOG0", async function() { await checkReject("0xA0"); });
-            it("LOG1", async function() { await checkReject("0xA1"); });
-            it("LOG2", async function() { await checkReject("0xA2"); });
-            it("LOG3", async function() { await checkReject("0xA3"); });
-            it("LOG4", async function() { await checkReject("0xA4"); });
+            it("LOG0", async function () { await checkReject("0xA0"); });
+            it("LOG1", async function () { await checkReject("0xA1"); });
+            it("LOG2", async function () { await checkReject("0xA2"); });
+            it("LOG3", async function () { await checkReject("0xA3"); });
+            it("LOG4", async function () { await checkReject("0xA4"); });
             // 0xA5 - 0xAF are undefined
 
-            for (let instr=0xA5; instr <= 0xEF; instr++) {
-                it(toHex(instr), async function() { await checkReject(toHex(instr)); });
+            for (let instr = 0xA5; instr <= 0xEF; instr++) {
+                it(toHex(instr), async function () { await checkReject(toHex(instr)); });
             }
 
-            it("CREATE", async function() { await checkReject("0xF0"); });
-            it("CALL", async function() { await checkReject("0xF1"); });
-            it("CALLCODE", async function() { await checkReject("0xF2"); });
+            it("CREATE", async function () { await checkReject("0xF0"); });
+            it("CALL", async function () { await checkReject("0xF1"); });
+            it("CALLCODE", async function () { await checkReject("0xF2"); });
             // F3 is RETURN (allowed)
-            it("DELEGATECALL", async function() { await checkReject("0xF4"); });
-            it("CREATE2", async function() { await checkReject("0xF5"); });
+            it("DELEGATECALL", async function () { await checkReject("0xF4"); });
+            it("CREATE2", async function () { await checkReject("0xF5"); });
             // 0xF6 - 0xF9 are undefined
-            it("STATICCALL", async function() { await checkReject("0xFA"); });
+            it("STATICCALL", async function () { await checkReject("0xFA"); });
             // 0xFB - 0xFC are undefined
             // FD is REVERT (allowed)
-            it("INVALID", async function() { await checkReject("0xFE"); });
-            it("SELFDESTRUCT", async function() { await checkReject("0xFF"); });
+            it("INVALID", async function () { await checkReject("0xFE"); });
+            it("SELFDESTRUCT", async function () { await checkReject("0xFF"); });
         });
 
-        describe("Should reject invalid JUMP", function() {
-            it("JUMP to nonconstant", async function() { await checkRejectWith("0x56", "JumpToNonConstantAddress"); });
-            it("JUMP to invalid", async function() { await checkRejectWith("0x56", "InvalidJumpDestination", "0x60018080"); });
-            it("JUMP outside the range", async function() { await checkRejectWith("0x56", "JumpTargetOutOfBounds", "0x60FF8080"); });
-            it("JUMPI to nonconstant", async function() { await checkRejectWith("0x57", "JumpToNonConstantAddress"); });
-            it("JUMPI to invalid", async function() { await checkRejectWith("0x57", "InvalidJumpDestination", "0x60018080"); });
-            it("JUMPI outside the range", async function() { await checkRejectWith("0x57", "JumpTargetOutOfBounds", "0x60FF8080"); });
+        describe("Should reject invalid JUMP", function () {
+            it("JUMP to nonconstant", async function () { await checkRejectWith("0x56", "JumpToNonConstantAddress"); });
+            it("JUMP to invalid", async function () { await checkRejectWith("0x56", "InvalidJumpDestination", "0x60018080"); });
+            it("JUMP outside the range", async function () { await checkRejectWith("0x56", "JumpTargetOutOfBounds", "0x60FF8080"); });
+            it("JUMPI to nonconstant", async function () { await checkRejectWith("0x57", "JumpToNonConstantAddress"); });
+            it("JUMPI to invalid", async function () { await checkRejectWith("0x57", "InvalidJumpDestination", "0x60018080"); });
+            it("JUMPI outside the range", async function () { await checkRejectWith("0x57", "JumpTargetOutOfBounds", "0x60FF8080"); });
         });
-        describe("Should be robust in detecting control graph cycles", function() {
-            it("JUMP cycle", async function() { await checkRejectWith("0x56", "CycleDetected", "0x60025B8080"); });
+        describe("Should be robust in detecting control graph cycles", function () {
+            it("JUMP cycle", async function () { await checkRejectWith("0x56", "CycleDetected", "0x60025B8080"); });
         });
 
     });
 
+    it("EvenValueGuard should allow transactions with even values", async function () {
+        // Extract the runtime bytecode
+        const runtimeBytecode = await getContractDeployedCode("EvenValueGuard");
+
+        await walletClient.sendTransaction({
+            to: safeAddress,
+            value: parseEther("1.0"),
+        });
+
+        // 3. Enable guard with empty program
+
+        // Enable guard via delegate call
+        const enableGuardData = encodeFunctionData({
+            abi: EasyGuardArtifact.abi,
+            functionName: 'enableGuard',
+            args: [easyGuardAddress, runtimeBytecode, false]
+        });
+
+        let transactions: MetaTransactionData[] = [
+            {
+                to: easyGuardAddress,
+                data: enableGuardData,
+                value: "0x0",
+                operation: OperationType.DelegateCall,
+            },
+        ];
+
+        let safeTransaction = await safe.createTransaction({ transactions });
+        safeTransaction = await safe.signTransaction(safeTransaction);
+        let txResponse = await safe.executeTransaction(safeTransaction);
+        await txResponse.transactionResponse?.wait();
+
+        // Check that guard is properly set
+        const guardAddress = await safe.getGuard();
+        expect(guardAddress.toLowerCase()).to.equal(easyGuardAddress.toLowerCase());
+
+        const easyGuard = await hre.viem.getContractAt(
+            "EasyGuard",
+            easyGuardAddress);
+
+        let checkerProgramAddress = await easyGuard.read.getCheckerProgram([safeAddress]);
+        console.log("checker program address: ", checkerProgramAddress);
+
+        let checkerProgram = await publicClient.getCode({ address: checkerProgramAddress });
+        console.log("checker program: ", checkerProgram);
+
+        expect(checkerProgram).to.be.equal(runtimeBytecode);
+
+
+        // 4. Execute a test transaction through the Safe
+        const transferAmount = parseEther("0.1");
+
+        transactions = [
+            {
+                to: walletClient.account.address,
+                data: "0x",
+                value: toHex(transferAmount),
+            },
+        ];
+        safeTransaction = await safe.createTransaction({ transactions });
+        safeTransaction = await safe.signTransaction(safeTransaction);
+        txResponse = await safe.executeTransaction(safeTransaction);
+        await txResponse.transactionResponse?.wait();
+
+
+        // Verify transaction executed correctly by checking the safe's balance
+        const safeBalance = await publicClient.getBalance({
+            address: safeAddress,
+        });
+
+        // Expect that balance reduced by transfer amount
+        expect(safeBalance == parseEther("0.9")).to.be.true;
+    });
+
+    it("EvenValueGuard should REJECT transactions with odd values", async function () {
+        // Extract the runtime bytecode
+        const runtimeBytecode = await getContractdeployedCode("EvenValueGuard");
+
+        await walletClient.sendTransaction({
+            to: safeAddress,
+            value: parseEther("1.0"),
+        });
+
+
+        // 3. Enable guard with empty program
+
+        // Enable guard via delegate call
+        const enableGuardData = encodeFunctionData({
+            abi: EasyGuardArtifact.abi,
+            functionName: 'enableGuard',
+            args: [easyGuardAddress, runtimeBytecode, false]
+        });
+
+        let transactions: MetaTransactionData[] = [
+            {
+                to: easyGuardAddress,
+                data: enableGuardData,
+                value: "0x0",
+                operation: OperationType.DelegateCall,
+            },
+        ];
+
+        let safeTransaction = await safe.createTransaction({ transactions });
+        safeTransaction = await safe.signTransaction(safeTransaction);
+        let txResponse = await safe.executeTransaction(safeTransaction);
+        await txResponse.transactionResponse?.wait();
+
+        // Check that guard is properly set
+        const guardAddress = await safe.getGuard();
+        expect(guardAddress.toLowerCase()).to.equal(easyGuardAddress.toLowerCase());
+
+        const easyGuard = await hre.viem.getContractAt(
+            "EasyGuard",
+            easyGuardAddress);
+
+        let checkerProgramAddress = await easyGuard.read.getCheckerProgram([safeAddress]);
+        console.log("checker program address: ", checkerProgramAddress);
+
+        let checkerProgram = await publicClient.getCode({ address: checkerProgramAddress });
+        console.log("checker program: ", checkerProgram);
+
+        expect(checkerProgram).to.be.equal(runtimeBytecode);
+
+
+        // 4. Execute a test transaction through the Safe
+        transactions = [
+            {
+                to: walletClient.account.address,
+                data: "0x",
+                value: "0x1111",
+            },
+        ];
+        safeTransaction = await safe.createTransaction({ transactions });
+        safeTransaction = await safe.signTransaction(safeTransaction);
+        await expect(
+            safe.executeTransaction(safeTransaction)
+        ).to.be.rejectedWith("Guard: Transaction verification failed");
+    });
 
     it("Should Enable guard, and execute transactions", async function () {
         expect(await safe.isSafeDeployed()).to.be.true;
@@ -301,7 +440,7 @@ describe("Safe with Guard", function () {
         let checkerProgramAddress = await easyGuard.read.getCheckerProgram([safeAddress]);
         console.log("checker program address: ", checkerProgramAddress);
 
-        let checkerProgram = await publicClient.getCode({address: checkerProgramAddress});
+        let checkerProgram = await publicClient.getCode({ address: checkerProgramAddress });
         console.log("checker program: ", checkerProgram);
 
         expect(checkerProgram).to.be.equal(trueProgram);
@@ -373,7 +512,7 @@ describe("Safe with Guard", function () {
         let checkerProgramAddress = await easyGuard.read.getCheckerProgram([safeAddress]);
         console.log("checker program address: ", checkerProgramAddress);
 
-        let checkerProgram = await publicClient.getCode({address: checkerProgramAddress});
+        let checkerProgram = await publicClient.getCode({ address: checkerProgramAddress });
         console.log("checker program: ", checkerProgram);
 
         expect(checkerProgram).to.be.equal(falseProgram);
